@@ -113,7 +113,8 @@ def os_fields(inv: dict) -> tuple:
 
 
 def status_of(host: dict) -> str:
-    return "production" if str(host.get("status")) == "0" else "inactive"
+    # iTop status 枚举: stock/implementation/production/obsolete（无 inactive）
+    return "production" if str(host.get("status")) == "0" else "stock"
 
 
 def build_rows(hosts: list, cls: str) -> list:
@@ -129,13 +130,9 @@ def build_rows(hosts: list, cls: str) -> list:
             "org_id": ORG_NAME,
             "status": status_of(h),
             "managementip": clean(main_ip(h)),
-            "serial_number": clean(serial),
+            "serialnumber": clean(serial),
             "model_id": clean(inv.get("model")),
         }
-        if cls == "Server":
-            fam, ver = os_fields(inv)
-            base["os_family"] = fam
-            base["os_version"] = ver
         rows.append(base)
     rows.sort(key=lambda r: r["name"])
     return rows
@@ -258,12 +255,13 @@ def run_once() -> bool:
         return True
 
     ok = True
+    # v1 属性码对齐 iTop 真实数据模型：serialnumber；OS 走 osfamily_id/osversion_id 外键，v2 再启
     ok &= push("zbx-servers", build_rows(hosts, "Server"),
-               ["name", "org_id", "status", "managementip", "os_family", "os_version", "serial_number", "model_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
     ok &= push("zbx-network", build_rows(hosts, "NetworkDevice"),
-               ["name", "org_id", "status", "managementip", "serial_number", "model_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
     ok &= push("zbx-storage", build_rows(hosts, "StorageSystem"),
-               ["name", "org_id", "status", "managementip", "serial_number", "model_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
     return ok
 
 
