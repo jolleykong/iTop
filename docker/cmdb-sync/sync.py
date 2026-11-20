@@ -233,8 +233,15 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     created = stat("Objects created")
     updated = stat("Objects updated")
     obsoleted = stat("Objects obsoleted")
-    errors = int(stat("Objects creation errors")) + int(stat("Objects update errors")) + \
-        int(stat("Objects reconciliation errors"))
+
+    def num(label: str) -> int:
+        try:
+            return int(stat(label))
+        except ValueError:
+            return 0
+
+    errors = num("Objects creation errors") + num("Objects update errors") + \
+        num("Objects reconciliation errors")
     log(f"{ds_name}: executed -> created={created}, updated={updated}, "
         f"obsoleted={obsoleted}, errors={errors}" + (f" | {err.group(1).strip()}" if err else ""))
     ok = err is None and (created != "?" or updated != "?")
