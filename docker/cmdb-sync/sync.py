@@ -180,9 +180,9 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     if not objs:
         log(f"{ds_name}: data source NOT FOUND — run 'docker compose up provision'")
         return False
-    _k, v = list(objs.items())[0]
-    ds_id = v.get("id")
-    table = v.get("fields", {}).get("database_table_name", "")
+    k, v = list(objs.items())[0]
+    ds_id = v.get("id") or str(k).split("::")[-1]
+    table = (v.get("fields") or {}).get("database_table_name", "")
     if not table:
         log(f"{ds_name}: database_table_name empty for id={ds_id}")
         return False
