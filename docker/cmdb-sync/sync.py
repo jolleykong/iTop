@@ -134,9 +134,13 @@ def build_rows(hosts: list, cls: str) -> list:
 
 def build_csv(rows: list, cols: list) -> str:
     header = ["primary_key::name"] + [c for c in cols if c != "name"]
+
+    def val(r: dict, c: str) -> str:
+        return clean(r["name"]) if c == "primary_key::name" else clean(r.get(c))
+
     lines = [";".join(header)]
     for r in rows:
-        lines.append(";".join(clean(r[c]) for c in header))
+        lines.append(";".join(val(r, c) for c in header))
     return "\n".join(lines) + "\n"
 
 
