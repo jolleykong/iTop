@@ -50,7 +50,7 @@ def zbx_rpc(method: str, params: dict):
 
 
 def itop_rest(operation: str, extra: dict):
-    payload = {"operation": operation, "auth_user": ITOP_USER, "auth_pwd": ITOP_PWD}
+    payload = {"operation": operation, "version": "1.0", "auth_user": ITOP_USER, "auth_pwd": ITOP_PWD}
     payload.update(extra)
     data = urllib.parse.urlencode({"json_data": json.dumps(payload)}).encode()
     req = urllib.request.Request(ITOP_URL + "/webservices/rest.php", data=data)

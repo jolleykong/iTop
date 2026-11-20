@@ -68,7 +68,7 @@ DS_DEFS = [
 
 
 def rest(operation: str, extra: dict):
-    payload = {"operation": operation, "auth_user": ADMIN_USER, "auth_pwd": ADMIN_PWD}
+    payload = {"operation": operation, "version": "1.0", "auth_user": ADMIN_USER, "auth_pwd": ADMIN_PWD}
     payload.update(extra)
     data = urllib.parse.urlencode({"json_data": json.dumps(payload)}).encode()
     req = urllib.request.Request(ITOP_URL + "/webservices/rest.php", data=data)
