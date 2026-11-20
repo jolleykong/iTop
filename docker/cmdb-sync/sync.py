@@ -311,8 +311,9 @@ def mysql_exec(sql: str) -> str:
 
 def push(ds_name: str, rows: list, cols: list) -> bool:
     """增量装载（官方采集器模式）：存在暂存行 UPDATE（touch last_seen）、新行 INSERT。
-    stale 淘汰由引擎 Job1 依据 full_load_periodicity（14400s，provision 设置）判定：
-    4h 内未被任何轮次 touch 的 replica 判为 disappeared -> delete_policy=update
+    stale 淘汰由引擎 Job1 依据 full_load_periodicity（provision 设置，与
+    SYNC_INTERVAL_SECONDS 一致：开发期 600s / 生产 14400s）判定：
+    一个窗口内未被任何轮次 touch 的 replica 判为 disappeared -> delete_policy=update
     标 obsolete。增量模式避免 replica 表膨胀（全量 TRUNCATE+INSERT 每轮都会新建 replica）。"""
     if not rows:
         log(f"{ds_name}: no rows, skip")

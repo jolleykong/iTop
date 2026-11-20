@@ -179,16 +179,18 @@ foreach ($aDsDefs as $aDef) {
 
 // 2.5 full_load_periodicity 必须 > 0：引擎在 exec-only 阶段（periodicity=0）会跳过
 //     disappeared->obsolete 处理（LimitDate=1970）。取与 SYNC_INTERVAL_SECONDS 一致的
-//     14400s，保证每轮全量装载后上一轮未出现的 replica 被正确标记 obsolete。
+//     600s（开发/验证期节奏），保证每轮装载后上一轮未出现的 replica 被正确标记 obsolete。
+//     生产化时与 SYNC_INTERVAL_SECONDS 一并调回 14400。
+$iLoadPeriodicity = 600;
 foreach ($aDsDefs as $aDef) {
     $oDS = findByOQL("SELECT SynchroDataSource WHERE name='" . $aDef['name'] . "'");
     if ($oDS === null) {
         continue;
     }
-    if ((int)$oDS->Get('full_load_periodicity') !== 14400) {
-        $oDS->Set('full_load_periodicity', 14400);
+    if ((int)$oDS->Get('full_load_periodicity') !== $iLoadPeriodicity) {
+        $oDS->Set('full_load_periodicity', $iLoadPeriodicity);
         $oDS->DBUpdate();
-        echo "[provision-ds] DS '{$aDef['name']}' full_load_periodicity -> 14400\n";
+        echo "[provision-ds] DS '{$aDef['name']}' full_load_periodicity -> {$iLoadPeriodicity}\n";
     }
 }
 
@@ -215,7 +217,7 @@ foreach ($aDsDefs as $aDef) {
         $oDS->Set('scope_restriction', '');
         $oDS->Set('delete_policy', 'update');
         $oDS->Set('delete_policy_update', 'status:obsolete');
-        $oDS->Set('full_load_periodicity', 0);
+        $oDS->Set('full_load_periodicity', $iLoadPeriodicity);
         $iDsId = $oDS->DBInsert();
         echo "[provision-ds] DS '{$aDef['name']}' recreated id=$iDsId\n";
         $oRows = new DBObjectSet(DBSearch::FromOQL("SELECT SynchroAttribute WHERE sync_source_id=$iDsId"));
