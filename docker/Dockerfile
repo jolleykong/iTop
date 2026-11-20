@@ -14,7 +14,7 @@ RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|secu
       libzip-dev zip unzip \
       libldap2-dev libicu-dev libonig-dev \
       libxml2-dev libcurl4-openssl-dev libssl-dev \
-      default-mysql-client \
+      default-mysql-client graphviz \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j"$(nproc)" \
       gd mysqli pdo_mysql soap curl zip intl mbstring ldap opcache \
