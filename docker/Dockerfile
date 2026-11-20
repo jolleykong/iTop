@@ -3,10 +3,13 @@
 #   docker build -f docker/Dockerfile -t itop-web:3.3.0-1 .
 FROM php:8.2-apache-bookworm
 
+# 与 itops-backend 同底座（Debian 12 bookworm），APT mirror 惯例对齐（空串=官方源）
+ARG APT_MIRROR=mirrors.aliyun.com
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ── 系统依赖 + PHP 扩展（iTop 3.3 setup 要求：mysqli/gd/soap/curl/zip/intl/mbstring/ldap 等）──
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
       libfreetype6-dev libjpeg62-turbo-dev libpng-dev \
       libzip-dev zip unzip \
       libldap2-dev libicu-dev libonig-dev \
