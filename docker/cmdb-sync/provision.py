@@ -20,22 +20,24 @@ ORG_NAME = os.environ.get("CMDB_ORG", "ITOPS")
 
 PLACEHOLDERS = ("", "CHANGE_ME", "CHANGE_ME_ADMIN_PWD")
 
-# ── 数据源定义（目标类 + 属性映射；reconcile=1 仅用于主键列）──────────────
-# attribute_list 条目: {attcode, reconcile, update, target_attcode(仅外键)}
+# ── 数据源定义（目标类 + 属性映射）──────────────────────────────
+# attribute_list 条目: {attcode, reconcile, update, reconciliation_attcode(仅外键)}
+# 对账键 = attribute_list 中 reconcile=true 的列（无独立 reconciliation_list 字段）
+# 淘汰策略 delete_policy=update + delete_policy_update='status:obsolete'
 DS_DEFS = [
     {
         "name": "zbx-servers",
         "scope_class": "Server",
         "desc": "Zabbix host sync -> Server (agent hosts + iLo hardware)",
         "attrs": [
-            {"attcode": "name", "reconcile": 1, "update": 0},
-            {"attcode": "org_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
-            {"attcode": "status", "reconcile": 0, "update": 1},
-            {"attcode": "managementip", "reconcile": 0, "update": 1},
-            {"attcode": "os_family", "reconcile": 0, "update": 1},
-            {"attcode": "os_version", "reconcile": 0, "update": 1},
-            {"attcode": "serial_number", "reconcile": 0, "update": 1},
-            {"attcode": "model_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
+            {"attcode": "name", "reconcile": True, "update": False},
+            {"attcode": "org_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
+            {"attcode": "status", "reconcile": False, "update": True},
+            {"attcode": "managementip", "reconcile": False, "update": True},
+            {"attcode": "os_family", "reconcile": False, "update": True},
+            {"attcode": "os_version", "reconcile": False, "update": True},
+            {"attcode": "serial_number", "reconcile": False, "update": True},
+            {"attcode": "model_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
         ],
     },
     {
@@ -43,12 +45,12 @@ DS_DEFS = [
         "scope_class": "NetworkDevice",
         "desc": "Zabbix host sync -> NetworkDevice (SNMP-only hosts)",
         "attrs": [
-            {"attcode": "name", "reconcile": 1, "update": 0},
-            {"attcode": "org_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
-            {"attcode": "status", "reconcile": 0, "update": 1},
-            {"attcode": "managementip", "reconcile": 0, "update": 1},
-            {"attcode": "serial_number", "reconcile": 0, "update": 1},
-            {"attcode": "model_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
+            {"attcode": "name", "reconcile": True, "update": False},
+            {"attcode": "org_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
+            {"attcode": "status", "reconcile": False, "update": True},
+            {"attcode": "managementip", "reconcile": False, "update": True},
+            {"attcode": "serial_number", "reconcile": False, "update": True},
+            {"attcode": "model_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
         ],
     },
     {
@@ -56,12 +58,12 @@ DS_DEFS = [
         "scope_class": "StorageSystem",
         "desc": "Zabbix host sync -> StorageSystem (name-pattern storage hosts)",
         "attrs": [
-            {"attcode": "name", "reconcile": 1, "update": 0},
-            {"attcode": "org_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
-            {"attcode": "status", "reconcile": 0, "update": 1},
-            {"attcode": "managementip", "reconcile": 0, "update": 1},
-            {"attcode": "serial_number", "reconcile": 0, "update": 1},
-            {"attcode": "model_id", "reconcile": 0, "update": 1, "target_attcode": "name"},
+            {"attcode": "name", "reconcile": True, "update": False},
+            {"attcode": "org_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
+            {"attcode": "status", "reconcile": False, "update": True},
+            {"attcode": "managementip", "reconcile": False, "update": True},
+            {"attcode": "serial_number", "reconcile": False, "update": True},
+            {"attcode": "model_id", "reconcile": False, "update": True, "reconciliation_attcode": "name"},
         ],
     },
 ]
@@ -142,9 +144,9 @@ def main():
             "user_id": user_id,
             "scope_class": d["scope_class"],
             "scope_restriction": "",
-            "reconciliation_list": json.dumps(["name"]),
             "attribute_list": json.dumps(d["attrs"]),
-            "user_delete_policy": "update",
+            "delete_policy": "update",
+            "delete_policy_update": "status:obsolete",
             "full_load_periodicity": 0,
         }
         r = rest("core/create", {"comment": "provisioned by itop-sync", "class": "SynchroDataSource", "fields": fields})
