@@ -50,10 +50,13 @@ def zbx_rpc(method: str, params: dict):
 
 
 def itop_rest(operation: str, extra: dict):
-    payload = {"operation": operation, "version": "1.0", "auth_user": ITOP_USER, "auth_pwd": ITOP_PWD}
+    payload = {"operation": operation, "version": "1.0"}
     payload.update(extra)
     data = urllib.parse.urlencode({"json_data": json.dumps(payload)}).encode()
+    # iTop 3.x REST 仅接受 HTTP Basic 认证（json_data 内嵌凭据会被拒）
+    import base64
     req = urllib.request.Request(ITOP_URL + "/webservices/rest.php", data=data)
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"{ITOP_USER}:{ITOP_PWD}".encode()).decode())
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         body = resp.read().decode("utf-8", "replace")
     try:
@@ -171,7 +174,9 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
         "csvdata": csv,
     }
     data = urllib.parse.urlencode(form).encode()
+    import base64
     req = urllib.request.Request(ITOP_URL + "/synchro/synchro_exec.php", data=data)
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"{ITOP_USER}:{ITOP_PWD}".encode()).decode())
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         body = resp.read().decode("utf-8", "replace")
     try:

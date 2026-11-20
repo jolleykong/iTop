@@ -68,10 +68,13 @@ DS_DEFS = [
 
 
 def rest(operation: str, extra: dict):
-    payload = {"operation": operation, "version": "1.0", "auth_user": ADMIN_USER, "auth_pwd": ADMIN_PWD}
+    payload = {"operation": operation, "version": "1.0"}
     payload.update(extra)
     data = urllib.parse.urlencode({"json_data": json.dumps(payload)}).encode()
+    # iTop 3.x REST 仅接受 HTTP Basic 认证（json_data 内嵌凭据会被拒）
     req = urllib.request.Request(ITOP_URL + "/webservices/rest.php", data=data)
+    import base64
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"{ADMIN_USER}:{ADMIN_PWD}".encode()).decode())
     with urllib.request.urlopen(req, timeout=60) as resp:
         body = resp.read().decode("utf-8", "replace")
     try:
