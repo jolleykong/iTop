@@ -10,6 +10,7 @@ zbx2itop 同步主循环：
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -18,9 +19,13 @@ from datetime import datetime
 
 ZBX_URL = os.environ.get("ZBX_URL", "").strip()
 ZBX_TOKEN = os.environ.get("ZBX_TOKEN", "").strip()
-ITOP_URL = os.environ.get("ITOP_URL", "http://itop-web:8081").rstrip("/")
+ITOP_URL = os.environ.get("ITOP_URL", "http://itop-web:80").rstrip("/")
 ITOP_USER = os.environ.get("ITOP_USER", "admin")
 ITOP_PWD = os.environ.get("ITOP_ADMIN_PWD", "")
+ITOP_DB_HOST = os.environ.get("ITOP_DB_HOST", "itop-db")
+ITOP_DB_NAME = os.environ.get("ITOP_DB_NAME", "itop")
+ITOP_DB_USER = os.environ.get("ITOP_DB_USER", "itop")
+ITOP_DB_PASS = os.environ.get("ITOP_DB_PASS", "ItopDb#2026")
 ORG_NAME = os.environ.get("CMDB_ORG", "ITOPS")
 INTERVAL = int(os.environ.get("SYNC_INTERVAL_SECONDS", "14400"))
 TIMEOUT = int(os.environ.get("SYNC_HTTP_TIMEOUT", "120"))
@@ -148,50 +153,95 @@ def build_csv(rows: list, cols: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+def q(v: str) -> str:
+    """SQL 字符串转义"""
+    return str(v or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
+def mysql_exec(sql: str) -> str:
+    """执行 SQL 批（密码走 MYSQL_PWD 环境变量，不进 argv）"""
+    env = dict(os.environ, MYSQL_PWD=ITOP_DB_PASS)
+    p = subprocess.run(
+        ["mysql", "-h", ITOP_DB_HOST, "-u", ITOP_DB_USER, "--default-character-set=utf8mb4", ITOP_DB_NAME],
+        input=sql.encode(), capture_output=True, timeout=TIMEOUT, env=env)
+    if p.returncode != 0:
+        raise RuntimeError("mysql failed: " + p.stderr.decode(errors="replace")[:300])
+    return p.stdout.decode(errors="replace")
+
+
 def push(ds_name: str, rows: list, cols: list) -> bool:
+    """官方采集器模式：存在的暂存行 UPDATE（触摸 last_seen）、新行 INSERT；
+    消失的行不动——引擎 Job1 按 delete_policy 自动淘汰。"""
     if not rows:
         log(f"{ds_name}: no rows, skip")
         return True
-    # synchro_exec.php 的 data_sources 收数字 ID（名称会被当作 id 报不存在）
+
+    # 解析数据源 id 与暂存表名
     r = itop_rest("core/get", {"class": "SynchroDataSource",
                                "key": f"SELECT SynchroDataSource WHERE name='{ds_name}'"})
     objs = r.get("objects") or {}
     if not objs:
         log(f"{ds_name}: data source NOT FOUND — run 'docker compose up provision'")
         return False
-    ds_id = list(objs.keys())[0].split("::")[-1]
-    csv = build_csv(rows, cols)
-    form = {
-        "auth_user": ITOP_USER,
-        "auth_pwd": ITOP_PWD,
-        "data_sources": ds_id,
-        "separator": ";",
-        "header_line": "1",
-        "charset": "UTF-8",
-        "csvdata": csv,
-    }
+    _k, v = list(objs.items())[0]
+    ds_id = v.get("id")
+    table = v.get("fields", {}).get("database_table_name", "")
+    if not table:
+        log(f"{ds_name}: database_table_name empty for id={ds_id}")
+        return False
+
+    # 暂存表内已存在的对账键
+    existing = {ln.strip() for ln in mysql_exec(
+        f"SELECT primary_key FROM `{table}`;").splitlines() if ln.strip()}
+
+    data_cols = [c for c in cols if c != "name"]
+    stmts = []
+    n_ins = n_upd = 0
+    for row in rows:
+        pk = row["name"]
+        vals = {c: row[c] for c in data_cols}
+        col_list = ", ".join(["`primary_key`"] + [f"`{c}`" for c in data_cols])
+        val_list = ", ".join(["'" + q(pk) + "'"] + ["'" + q(vals[c]) + "'" for c in data_cols])
+        if pk in existing:
+            set_clause = ", ".join([f"`{c}`='" + q(vals[c]) + "'" for c in data_cols])
+            stmts.append(f"UPDATE `{table}` SET {set_clause} WHERE `primary_key`='" + q(pk) + "';")
+            n_upd += 1
+        else:
+            stmts.append(f"INSERT INTO `{table}` ({col_list}) VALUES ({val_list});")
+            n_ins += 1
+
+    # 分批执行（每批 500 条语句，避免单次管道过大）
+    BATCH = 500
+    for i in range(0, len(stmts), BATCH):
+        mysql_exec("\n".join(stmts[i:i + BATCH]))
+    log(f"{ds_name}: staged rows -> insert={n_ins}, update={n_upd}, "
+        f"stale(untouched)={max(0, len(existing) - n_upd)}")
+
+    # 触发同步执行（synchro_exec.php 仅执行暂存表已装载的数据）
+    form = {"auth_user": ITOP_USER, "auth_pwd": ITOP_PWD, "data_sources": str(ds_id)}
     data = urllib.parse.urlencode(form).encode()
     import base64
     req = urllib.request.Request(ITOP_URL + "/synchro/synchro_exec.php", data=data)
     req.add_header("Authorization", "Basic " + base64.b64encode(f"{ITOP_USER}:{ITOP_PWD}".encode()).decode())
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         body = resp.read().decode("utf-8", "replace")
-    # 解析执行报告（XML report 属性形态）
-    try:
-        m = re.search(r"<report[^>]*status=.([a-z]+).", body)
-        status = m.group(1) if m else "unknown"
+    body = re.sub(r"<script.*?</script>", " ", body, flags=re.S)
+    body = re.sub(r"<[^>]+>", " ", body)
 
-        def stat(key: str):
-            mm = re.search(rf"{key}=.([0-9]+).", body)
-            return mm.group(1) if mm else "0"
+    def stat(label: str) -> str:
+        m = re.search(label + r":\s*(\d+)", body)
+        return m.group(1) if m else "?"
 
-        log(f"{ds_name}: {len(rows)} rows pushed -> status={status}, "
-            f"created={stat('objects_created')}, updated={stat('objects_updated')}, "
-            f"errors={stat('objects_errors')}, obsolete={stat('objects_obsoleted')}")
-        return status in ("running", "completed")
-    except Exception:  # noqa: BLE001
-        log(f"{ds_name}: unexpected response: {body[:200]}")
-        return False
+    err = re.search(r"ERROR:\s*([^\n<]{0,200})", body)
+    created = stat("Objects created")
+    updated = stat("Objects updated")
+    obsoleted = stat("Objects obsoleted")
+    errors = int(stat("Objects creation errors")) + int(stat("Objects update errors")) + \
+        int(stat("Objects reconciliation errors"))
+    log(f"{ds_name}: executed -> created={created}, updated={updated}, "
+        f"obsoleted={obsoleted}, errors={errors}" + (f" | {err.group(1).strip()}" if err else ""))
+    ok = err is None and (created != "?" or updated != "?")
+    return ok
 
 
 def run_once() -> bool:

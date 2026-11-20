@@ -83,6 +83,10 @@ services:
       ITOP_ADMIN_PWD: "${ITOP_ADMIN_PWD:-}"
       CMDB_ORG: "${CMDB_ORG:-ITOPS}"
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-14400}"
+      ITOP_DB_HOST: itop-db
+      ITOP_DB_NAME: itop
+      ITOP_DB_USER: itop
+      ITOP_DB_PASS: "ItopDb#2026"
 
 volumes:
   itop-db-data:
