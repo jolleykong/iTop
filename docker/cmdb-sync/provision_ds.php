@@ -38,9 +38,34 @@ echo "[provision-ds] logged in as $sAuthUser\n";
 // 与 sync.py build_rows 的列保持一致
 $aDsDefs = [
     [
+        'name' => 'zbx-vms',
+        'scope_class' => 'VirtualMachine',
+        'desc' => 'Zabbix host sync -> VirtualMachine (VMware Guest template, vCenter confirmed)',
+        'attrs' => [
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
+            ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+            ['attcode' => 'status', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'description', 'reconcile' => false, 'update' => true],
+            // virtualhost_id 必填：宿主线索缺失期统一指向占位宿主
+            ['attcode' => 'virtualhost_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+        ],
+    ],
+    [
+        'name' => 'zbx-dbservers',
+        'scope_class' => 'DBServer',
+        'desc' => 'Zabbix host sync -> DBServer (Oracle/MySQL by ODBC, linked to host via {$ORACLE.HOST})',
+        'attrs' => [
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
+            ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+            // system_id 必填：承载 FunctionalCI（由 {$ORACLE.HOST} 反查 OS host 得出）
+            ['attcode' => 'system_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+        ],
+    ],
+    [
         'name' => 'zbx-servers',
         'scope_class' => 'Server',
-        'desc' => 'Zabbix host sync -> Server (agent hosts + iLo hardware)',
+        'desc' => 'Zabbix host sync -> Server (physical/BMC/ESXi hosts; agent-only marked phys:unverified)',
         'attrs' => [
             ['attcode' => 'name', 'reconcile' => true, 'update' => true],
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
@@ -48,6 +73,7 @@ $aDsDefs = [
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
             ['attcode' => 'serialnumber', 'reconcile' => false, 'update' => true],
             ['attcode' => 'model_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+            ['attcode' => 'description', 'reconcile' => false, 'update' => true],
         ],
     ],
     [
@@ -98,6 +124,29 @@ if ($oOrg === null) {
     echo "[provision-ds] Organization '$sOrgName' exists id=" . $oOrg->GetKey() . "\n";
 }
 
+// 1.5 占位宿主（VirtualMachine.virtualhost_id / DBServer.system_id 必填；
+//     宿主线索补齐前的统一归属桶）
+function ensurePlaceholder($sClass, $oOrg, $sName, $sDesc)
+{
+    $o = findByOQL("SELECT $sClass WHERE name='" . $sName . "'");
+    if ($o !== null) {
+        echo "[provision-ds] placeholder $sClass '$sName' exists id=" . $o->GetKey() . "\n";
+        return;
+    }
+    $o = MetaModel::NewObject($sClass);
+    $o->Set('name', $sName);
+    $o->Set('org_id', $oOrg->GetKey());
+    $o->Set('status', 'implementation');
+    $o->Set('description', $sDesc);
+    $iId = $o->DBInsert();
+    echo "[provision-ds] placeholder $sClass '$sName' created id=$iId\n";
+}
+// VirtualMachine.virtualhost_id 目标类为 VirtualHost（抽象）——占位用具体类 Hypervisor
+ensurePlaceholder('Hypervisor', $oOrg, 'ZBX-VM-Unassigned-Host',
+    '占位虚拟化宿主：Zabbix VMware discovery 未提供 VM->宿主线索，宿主信息补齐前 VM 统一挂接于此（由 zbx2itop 自动维护）');
+ensurePlaceholder('Server', $oOrg, 'ZBX-DB-Host-Unassigned',
+    '占位宿主：DB 实例的承载 OS 在 Zabbix 未单独纳管或无法通过 {$ORACLE.HOST}/IP 解析，治理补齐后自动迁移（由 zbx2itop 自动维护）');
+
 // 2. Synchro Data Sources
 foreach ($aDsDefs as $aDef) {
     $oExisting = findByOQL("SELECT SynchroDataSource WHERE name='" . $aDef['name'] . "'");
@@ -125,7 +174,22 @@ foreach ($aDsDefs as $aDef) {
     // 不传 attribute_list：iTop 会自动为 scope_class 全属性生成默认映射行，
     // 随后按本定义逐行归一化（与 UI 表单编辑等效）
     $iDsId = $oDS->DBInsert();
-    echo "[provision-ds] DS '{$aDef['name']}' created id=$iDsId target={$aDef['scope_class']}\n";
+        echo "[provision-ds] DS '{$aDef['name']}' created id=$iDsId target={$aDef['scope_class']}\n";
+}
+
+// 2.5 full_load_periodicity 必须 > 0：引擎在 exec-only 阶段（periodicity=0）会跳过
+//     disappeared->obsolete 处理（LimitDate=1970）。取与 SYNC_INTERVAL_SECONDS 一致的
+//     14400s，保证每轮全量装载后上一轮未出现的 replica 被正确标记 obsolete。
+foreach ($aDsDefs as $aDef) {
+    $oDS = findByOQL("SELECT SynchroDataSource WHERE name='" . $aDef['name'] . "'");
+    if ($oDS === null) {
+        continue;
+    }
+    if ((int)$oDS->Get('full_load_periodicity') !== 14400) {
+        $oDS->Set('full_load_periodicity', 14400);
+        $oDS->DBUpdate();
+        echo "[provision-ds] DS '{$aDef['name']}' full_load_periodicity -> 14400\n";
+    }
 }
 
 // ── 归一化映射行（对已存在/新建的数据源都执行，幂等）────────────────
