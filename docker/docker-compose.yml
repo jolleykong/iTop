@@ -38,6 +38,28 @@ services:
       - itop-data:/var/www/html/data
       - itop-log:/var/www/html/log
 
+  # Zabbix → iTop CMDB 同步（发现与资产登记，2026-11-20）
+  # 凭据与配置全部来自 /opt/itop/.env（chmod 600）：
+  #   ZBX_URL / ZBX_TOKEN / ITOP_USER / ITOP_ADMIN_PWD / CMDB_ORG / SYNC_INTERVAL_SECONDS
+  # 首次启动自动创建 Organization + 3 个 Synchro Data Source（provision.py）
+  sync:
+    build:
+      context: ./cmdb-sync
+    image: itop-sync:1.0
+    container_name: itop-sync
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ZBX_URL: "${ZBX_URL}"
+      ZBX_TOKEN: "${ZBX_TOKEN}"
+      ITOP_URL: "http://itop-web:8081"
+      ITOP_USER: "${ITOP_USER:-admin}"
+      ITOP_ADMIN_PWD: "${ITOP_ADMIN_PWD:-}"
+      CMDB_ORG: "${CMDB_ORG:-ITOPS}"
+      SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-14400}"
+
 volumes:
   itop-db-data:
   itop-conf:
