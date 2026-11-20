@@ -166,3 +166,4 @@ local.properties
 # Windows
 Thumbs.db
 
+__pycache__/
