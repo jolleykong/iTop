@@ -50,9 +50,9 @@ def zbx_rpc(method: str, params: dict):
 
 
 def itop_rest(operation: str, extra: dict):
-    payload = {"operation": operation, "version": "1.0"}
+    payload = {"operation": operation}
     payload.update(extra)
-    data = urllib.parse.urlencode({"json_data": json.dumps(payload)}).encode()
+    data = urllib.parse.urlencode({"version": "1.0", "json_data": json.dumps(payload)}).encode()
     # iTop 3.x REST 仅接受 HTTP Basic 认证（json_data 内嵌凭据会被拒）
     import base64
     req = urllib.request.Request(ITOP_URL + "/webservices/rest.php", data=data)
