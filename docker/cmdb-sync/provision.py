@@ -144,7 +144,7 @@ def main():
             "user_id": user_id,
             "scope_class": d["scope_class"],
             "scope_restriction": "",
-            "attribute_list": json.dumps(d["attrs"]),
+            "attribute_list": d["attrs"],  # 直接传数组（REST 要求 linkedset 为数组而非字符串）
             "delete_policy": "update",
             "delete_policy_update": "status:obsolete",
             "full_load_periodicity": 0,
