@@ -105,7 +105,7 @@ def main():
     # 1. Organization
     org_id = find_id("Organization", f"SELECT Organization WHERE name='{ORG_NAME}'")
     if org_id is None:
-        r = rest("core/create", {"class": "Organization",
+        r = rest("core/create", {"comment": "provisioned by itop-sync", "class": "Organization",
                                  "fields": {"name": ORG_NAME, "status": "active"}})
         if r.get("code") != 0:
             raise RuntimeError("create Organization failed: " + str(r.get("message")))
@@ -138,7 +138,7 @@ def main():
             "user_delete_policy": "update",
             "full_load_periodicity": 0,
         }
-        r = rest("core/create", {"class": "SynchroDataSource", "fields": fields})
+        r = rest("core/create", {"comment": "provisioned by itop-sync", "class": "SynchroDataSource", "fields": fields})
         if r.get("code") != 0:
             raise RuntimeError(f"create DS {d['name']} failed: {r.get('message')}")
         print(f"[provision] DS '{d['name']}' created id={r['id']} target={d['scope_class']}")
