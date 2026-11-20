@@ -1,0 +1,43 @@
+# iTop CMDB 基础设施栈（2026-11-20）
+# 版本基准：jolleykong/iTop tag:3.3.0-1（用户定稿为默认版本）
+# 端口：8081（宿主，避开 itops-frontend 8080）；DB 仅 docker 内网，不暴露宿主端口
+services:
+  db:
+    image: mariadb:10.11
+    container_name: itop-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: "ItopDb#2026"
+      MARIADB_DATABASE: itop
+      MARIADB_USER: itop
+      MARIADB_PASSWORD: "ItopDb#2026"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - itop-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    image: itop-web:3.3.0-1
+    container_name: itop-web
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8081:80"
+    volumes:
+      - itop-conf:/var/www/html/conf
+      - itop-data:/var/www/html/data
+      - itop-log:/var/www/html/log
+
+volumes:
+  itop-db-data:
+  itop-conf:
+  itop-data:
+  itop-log:
