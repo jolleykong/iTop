@@ -191,7 +191,8 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     existing = {ln.strip() for ln in mysql_exec(
         f"SELECT primary_key FROM `{table}`;").splitlines() if ln.strip()}
 
-    data_cols = [c for c in cols if c != "name"]
+    # 暂存表必须含 name 列（引擎对账读暂存表属性列，primary_key 只是副本列）
+    data_cols = ["name"] + [c for c in cols if c != "name"]
     stmts = []
     n_ins = n_upd = 0
     for row in rows:
