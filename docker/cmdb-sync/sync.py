@@ -137,6 +137,27 @@ def clean_serial(inv: dict) -> str:
     return re.sub(r"^\s*SN\s*[:#\s]\s*", "", str(inv.get("serialno_a") or "")).strip()
 
 
+def virt_evidence(h: dict, tg: dict) -> tuple:
+    """v3 双来源判定物理性（覆盖 agent 关机/未装 agent 场景）：
+    来源1（自动，优先）：inventory.type —— hw.virt item 上报的标准化词表
+      （Physical server / Virtual machine）。inventory 是最后已知值持久化，
+      设备关机后仍保留，只对"从未采集过"的设备失效。
+    来源2（手工兜底）：host tag `virt`，值 physical|virtual（大小写不敏感），
+      用于新上架/老 agent 未部署 hw_serial.conf 的设备人工标注。
+    返回 (physical|virtual|None, 来源note)。"""
+    it = clean((h.get("inventory") or {}).get("type"))
+    if it == "Physical server":
+        return "physical", "phys:inv-virt"
+    if it == "Virtual machine":
+        return "virtual", "virt:inv-virt"
+    t = (tg.get("virt") or "").strip().lower()
+    if t == "physical":
+        return "physical", "phys:tag-virt"
+    if t == "virtual":
+        return "virtual", "virt:tag-virt"
+    return None, None
+
+
 def base_row(h: dict, name: str, cls: str, notes: list) -> dict:
     inv = h.get("inventory") or {}
     row = {
@@ -222,12 +243,18 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         notes = [src] if src else []
 
         if cls is None:
-            # 无模板证据：名称兜底 + 保守 Server（unverified）
+            # 无模板证据：v3 双来源判定（inv hw.virt 优先，tag virt 手工兜底），
+            # 两来源均无 → 保守 Server 暂挂（phys:unverified）
             if RE_STORAGE.search(name):
                 cls = "StorageSystem"
             else:
-                cls = "Server"
-                notes.append("phys:unverified")
+                verdict, vsrc = virt_evidence(h, tg)
+                if verdict is None:
+                    cls = "Server"
+                    notes.append("phys:unverified")
+                else:
+                    cls = "VirtualMachine" if verdict == "virtual" else "Server"
+                    notes.append(vsrc)
         if cls == "Server" and tg.get("类型") == "DB":
             notes.append("tag:类型=DB")
         if cls == "VirtualMachine":
@@ -271,6 +298,16 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
 
     for cls, rows in by_cls.items():
         stats["counts"][cls] = len(rows)
+    # v3 物理性判定来源细分（Server 类 unverified 暂挂量是治理重点）
+    for cls, rows in by_cls.items():
+        if cls != "Server":
+            continue
+        stats["counts"]["Server_unverified"] = sum(
+            1 for r in rows if "phys:unverified" in r["_notes"])
+        stats["counts"]["Server_by_tag"] = sum(
+            1 for r in rows if "phys:tag-virt" in r["_notes"])
+        stats["counts"]["Server_by_inv"] = sum(
+            1 for r in rows if "phys:inv-virt" in r["_notes"])
     return by_cls, stats
 
 
@@ -401,7 +438,7 @@ def run_once() -> bool:
         "output": ["host", "name", "status"],
         "selectGroups": ["name"],
         "selectInterfaces": ["type", "ip", "main"],
-        "selectInventory": ["os", "os_full", "serialno_a", "model", "vendor", "location"],
+        "selectInventory": ["os", "os_full", "serialno_a", "model", "vendor", "location", "type"],
         "selectParentTemplates": ["name"],
         "selectTags": ["tag", "value"],
     })
