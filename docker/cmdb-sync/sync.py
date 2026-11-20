@@ -115,12 +115,13 @@ def build_rows(hosts: list, cls: str) -> list:
             continue
         inv = h.get("inventory") or {}
         name = clean(h.get("name") or h.get("host"))
+        serial = re.sub(r"^\s*SN\s*[:#\s]\s*", "", str(inv.get("serialno_a") or "")).strip()
         base = {
             "name": name,
             "org_id": ORG_NAME,
             "status": status_of(h),
             "managementip": clean(main_ip(h)),
-            "serial_number": clean(inv.get("serialno_a")),
+            "serial_number": clean(serial),
             "model_id": clean(inv.get("model")),
         }
         if cls == "Server":
