@@ -152,22 +152,12 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     if not rows:
         log(f"{ds_name}: no rows, skip")
         return True
-    r = itop_rest("core/get", {"class": "SynchroDataSource",
-                               "key": f"SELECT SynchroDataSource WHERE name='{ds_name}'"})
-    if r.get("code") != 0:
-        log(f"{ds_name}: DS search failed: {r.get('message')}")
-        return False
-    objs = r.get("objects") or {}
-    if not objs:
-        log(f"{ds_name}: data source NOT FOUND — rerun provision.py (need ITOP_ADMIN_PWD)")
-        return False
-    ds_id = list(objs.keys())[0].split("::")[-1]
+    # synchro_exec.php HTTP 模式：必需参数为 data_sources（逗号分隔名称清单）
     csv = build_csv(rows, cols)
     form = {
         "auth_user": ITOP_USER,
         "auth_pwd": ITOP_PWD,
-        "data_source_id": ds_id,
-        "data_source_name": ds_name,
+        "data_sources": ds_name,
         "separator": ";",
         "header_line": "1",
         "charset": "UTF-8",
@@ -179,17 +169,21 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     req.add_header("Authorization", "Basic " + base64.b64encode(f"{ITOP_USER}:{ITOP_PWD}".encode()).decode())
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         body = resp.read().decode("utf-8", "replace")
+    # 解析执行报告（XML report 属性形态）
     try:
-        j = json.loads(body)
-        st = j.get("status") or {}
-        log(f"{ds_name}: {len(rows)} rows pushed -> status={st.get('status')}, "
-            f"created={st.get('stats', {}).get('objects_created')}, "
-            f"updated={st.get('stats', {}).get('objects_updated')}, "
-            f"errors={st.get('stats', {}).get('objects_errors')}, "
-            f"obsolete={st.get('stats', {}).get('objects_obsolete')}")
-        return str(st.get("status")) == "running"
-    except json.JSONDecodeError:
-        log(f"{ds_name}: non-JSON response: {body[:200]}")
+        m = re.search(r"<report[^>]*status=.([a-z]+).", body)
+        status = m.group(1) if m else "unknown"
+
+        def stat(key: str):
+            mm = re.search(rf"{key}=.([0-9]+).", body)
+            return mm.group(1) if mm else "0"
+
+        log(f"{ds_name}: {len(rows)} rows pushed -> status={status}, "
+            f"created={stat('objects_created')}, updated={stat('objects_updated')}, "
+            f"errors={stat('objects_errors')}, obsolete={stat('objects_obsoleted')}")
+        return status in ("running", "completed")
+    except Exception:  # noqa: BLE001
+        log(f"{ds_name}: unexpected response: {body[:200]}")
         return False
 
 
