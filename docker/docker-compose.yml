@@ -37,6 +37,30 @@ services:
       - itop-conf:/var/www/html/conf
       - itop-data:/var/www/html/data
       - itop-log:/var/www/html/log
+      # env-production 是 setup 编译的数据模型缓存，必须持久化（否则重建容器丢失）
+      - ./env-production:/var/www/html/env-production
+
+  # 一次性供给：iTop 原生 MetaModel API 建 Organization + 3 个 Synchro Data Source
+  # （幂等，存在即跳过；重跑：docker compose up provision）
+  provision:
+    image: itop-web:3.3.0-1
+    container_name: itop-provision
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - itop-conf:/var/www/html/conf
+      - itop-data:/var/www/html/data
+      - itop-log:/var/www/html/log
+      - ./env-production:/var/www/html/env-production
+      - ./cmdb-sync:/var/www/html/cmdb-sync:ro
+    command:
+      - php
+      - /var/www/html/cmdb-sync/provision_ds.php
+      - --auth_user=${ITOP_USER:-admin}
+      - --auth_pwd=${ITOP_ADMIN_PWD:-}
+      - --org=${CMDB_ORG:-ITOPS}
 
   # Zabbix → iTop CMDB 同步（发现与资产登记，2026-11-20）
   # 凭据与配置全部来自 /opt/itop/.env（chmod 600）：
