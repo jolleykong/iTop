@@ -152,8 +152,8 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     if not rows:
         log(f"{ds_name}: no rows, skip")
         return True
-    r = itop_rest("core/search", {"class": "SynchroDataSource",
-                                  "query": f"SELECT SynchroDataSource WHERE name='{ds_name}'"})
+    r = itop_rest("core/get", {"class": "SynchroDataSource",
+                               "key": f"SELECT SynchroDataSource WHERE name='{ds_name}'"})
     if r.get("code") != 0:
         log(f"{ds_name}: DS search failed: {r.get('message')}")
         return False

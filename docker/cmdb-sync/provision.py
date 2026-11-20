@@ -84,7 +84,8 @@ def rest(operation: str, extra: dict):
 
 
 def find_id(cls: str, oql: str):
-    r = rest("core/search", {"class": cls, "query": oql})
+    # iTop REST 无 core/search；OQL 查询走 core/get（key=OQL）
+    r = rest("core/get", {"class": cls, "key": oql})
     if r.get("code") != 0:
         raise RuntimeError(f"search {cls} failed: {r.get('message')}")
     items = r.get("objects") or {}
