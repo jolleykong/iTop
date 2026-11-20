@@ -61,6 +61,7 @@ $aDsDefs = [
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
             ['attcode' => 'serialnumber', 'reconcile' => false, 'update' => true],
             ['attcode' => 'model_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+            ['attcode' => 'networkdevicetype_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
         ],
     ],
     [

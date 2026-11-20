@@ -88,13 +88,16 @@ def classify(host: dict) -> str:
 
 
 def main_ip(host: dict) -> str:
+    # iTop managementip 仅接受 IPv4 点分格式，跳过 IPv6（如 fe80:: 链路本地地址）
     itfs = host.get("interfaces") or []
     for i in itfs:  # agent 优先
-        if i.get("type") == "1" and i.get("ip"):
-            return i["ip"]
+        ip = (i.get("ip") or "").strip()
+        if i.get("type") == "1" and ip and ":" not in ip:
+            return ip
     for i in itfs:
-        if i.get("ip"):
-            return i["ip"]
+        ip = (i.get("ip") or "").strip()
+        if ip and ":" not in ip:
+            return ip
     return ""
 
 
@@ -133,6 +136,8 @@ def build_rows(hosts: list, cls: str) -> list:
             "serialnumber": clean(serial),
             "model_id": clean(inv.get("model")),
         }
+        if cls == "NetworkDevice":
+            base["networkdevicetype_id"] = os.environ.get("NET_DEVICE_TYPE", "Switch")
         rows.append(base)
     rows.sort(key=lambda r: r["name"])
     return rows
@@ -268,7 +273,7 @@ def run_once() -> bool:
     ok &= push("zbx-servers", build_rows(hosts, "Server"),
                ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
     ok &= push("zbx-network", build_rows(hosts, "NetworkDevice"),
-               ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "model_id", "networkdevicetype_id"])
     ok &= push("zbx-storage", build_rows(hosts, "StorageSystem"),
                ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
     return ok
