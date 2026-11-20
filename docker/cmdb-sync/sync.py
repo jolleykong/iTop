@@ -152,12 +152,19 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     if not rows:
         log(f"{ds_name}: no rows, skip")
         return True
-    # synchro_exec.php HTTP 模式：必需参数为 data_sources（逗号分隔名称清单）
+    # synchro_exec.php 的 data_sources 收数字 ID（名称会被当作 id 报不存在）
+    r = itop_rest("core/get", {"class": "SynchroDataSource",
+                               "key": f"SELECT SynchroDataSource WHERE name='{ds_name}'"})
+    objs = r.get("objects") or {}
+    if not objs:
+        log(f"{ds_name}: data source NOT FOUND — run 'docker compose up provision'")
+        return False
+    ds_id = list(objs.keys())[0].split("::")[-1]
     csv = build_csv(rows, cols)
     form = {
         "auth_user": ITOP_USER,
         "auth_pwd": ITOP_PWD,
-        "data_sources": ds_name,
+        "data_sources": ds_id,
         "separator": ";",
         "header_line": "1",
         "charset": "UTF-8",
