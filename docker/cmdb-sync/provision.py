@@ -83,6 +83,15 @@ def rest(operation: str, extra: dict):
         return {"code": -1, "message": "non-JSON response: " + body[:300]}
 
 
+
+def resp_id(r) -> int:
+    """从 REST 响应提取对象 id（顶层 id 或 objects{Class::id:{fields}} 两种形态）"""
+    if r.get("id"):
+        return int(r["id"])
+    objs = r.get("objects") or {}
+    k, v = next(iter(objs.items()))
+    return int(v.get("id") or k.split("::")[-1])
+
 def find_id(cls: str, oql: str):
     # iTop REST 无 core/search；OQL 查询走 core/get（key=OQL）
     r = rest("core/get", {"class": cls, "key": oql})
@@ -109,7 +118,7 @@ def main():
                                  "fields": {"name": ORG_NAME, "status": "active"}})
         if r.get("code") != 0:
             raise RuntimeError("create Organization failed: " + str(r.get("message")))
-        org_id = int(r["id"])
+        org_id = resp_id(r)
         print(f"[provision] Organization '{ORG_NAME}' created id={org_id}")
     else:
         print(f"[provision] Organization '{ORG_NAME}' exists id={org_id}")
@@ -141,7 +150,7 @@ def main():
         r = rest("core/create", {"comment": "provisioned by itop-sync", "class": "SynchroDataSource", "fields": fields})
         if r.get("code") != 0:
             raise RuntimeError(f"create DS {d['name']} failed: {r.get('message')}")
-        print(f"[provision] DS '{d['name']}' created id={r['id']} target={d['scope_class']}")
+        print(f"[provision] DS '{d['name']}' created id={resp_id(r)} target={d['scope_class']}")
 
     print("[provision] ALL DONE")
     return 0
