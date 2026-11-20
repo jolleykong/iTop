@@ -136,7 +136,9 @@ function ensurePlaceholder($sClass, $oOrg, $sName, $sDesc)
     $o = MetaModel::NewObject($sClass);
     $o->Set('name', $sName);
     $o->Set('org_id', $oOrg->GetKey());
-    $o->Set('status', 'implementation');
+    if (MetaModel::IsValidAttCode($sClass, 'status')) {
+        $o->Set('status', 'implementation');  // Cloud 等非 PhysicalDevice 子类无 status 字段
+    }
     $o->Set('description', $sDesc);
     $iId = $o->DBInsert();
     echo "[provision-ds] placeholder $sClass '$sName' created id=$iId\n";
@@ -144,6 +146,9 @@ function ensurePlaceholder($sClass, $oOrg, $sName, $sDesc)
 // VirtualMachine.virtualhost_id 目标类为 VirtualHost（抽象）——占位用具体类 Hypervisor
 ensurePlaceholder('Hypervisor', $oOrg, 'ZBX-VM-Unassigned-Host',
     '占位虚拟化宿主：Zabbix VMware discovery 未提供 VM->宿主线索，宿主信息补齐前 VM 统一挂接于此（由 zbx2itop 自动维护）');
+// 公有云资源（zbx tag virt=ecs）宿主为 Cloud 平台
+ensurePlaceholder('Cloud', $oOrg, 'ZBX-Cloud-Unassigned',
+    '占位公有云平台：公有云资源（ECS 等）的账号/区域线索补齐前统一挂接于此（由 zbx2itop 自动维护）');
 ensurePlaceholder('Server', $oOrg, 'ZBX-DB-Host-Unassigned',
     '占位宿主：DB 实例的承载 OS 在 Zabbix 未单独纳管或无法通过 {$ORACLE.HOST}/IP 解析，治理补齐后自动迁移（由 zbx2itop 自动维护）');
 

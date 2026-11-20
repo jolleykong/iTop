@@ -47,6 +47,8 @@ PLACEHOLDERS = ("", "CHANGE_ME", "CHANGE_ME_ADMIN_PWD")
 # VirtualMachine.virtualhost_id 为必填外键；Zabbix vCenter 发现不带宿主信息，
 # 暂统一归属占位宿主（provision 会确保该 Server 存在），宿主线索补齐后 v3 关联真实宿主
 VM_HOST_PLACEHOLDER = os.environ.get("VM_HOST_PLACEHOLDER", "ZBX-VM-Unassigned-Host")
+# 公有云资源（virt tag = ecs 等云类型）的宿主桶：宿主为 Cloud 平台而非 Hypervisor
+CLOUD_PLACEHOLDER = os.environ.get("CLOUD_PLACEHOLDER", "ZBX-Cloud-Unassigned")
 # DBServer.system_id 为必填外键；承载 OS host 未纳管/命名无关时挂占位桶，
 # Zabbix 侧补齐 OS 纳管或 {$ORACLE.HOST} 规范后自动重新挂接
 DB_HOST_PLACEHOLDER = os.environ.get("DB_HOST_PLACEHOLDER", "ZBX-DB-Host-Unassigned")
@@ -142,9 +144,14 @@ def virt_evidence(h: dict, tg: dict) -> tuple:
     来源1（自动，优先）：inventory.type —— hw.virt item 上报的标准化词表
       （Physical server / Virtual machine）。inventory 是最后已知值持久化，
       设备关机后仍保留，只对"从未采集过"的设备失效。
-    来源2（手工兜底）：host tag `virt`，值 physical|virtual（大小写不敏感），
-      用于新上架/老 agent 未部署 hw_serial.conf 的设备人工标注。
-    返回 (physical|virtual|None, 来源note)。"""
+    来源2（手工兜底）：host tag `virt`，值 physical|virtual|ecs（大小写不敏感），
+      用于新上架/老 agent 未部署 hw_serial.conf 的设备人工标注，以及公有云资源
+      类型指定（inv 来源无云概念，tag:ecs 比 inv 的 generic virtual 更具体，
+      故 ecs 优先于 inv）。
+    返回 (physical|virtual|virtual-ecs|None, 来源note)。"""
+    t_all = {str(k).strip().lower(): str(v or "").strip().lower() for k, v in tg.items()}
+    if t_all.get("virt") == "ecs":
+        return "virtual-ecs", "virt:tag-ecs"
     it = clean((h.get("inventory") or {}).get("type"))
     if it == "Physical server":
         return "physical", "phys:inv-virt"
@@ -253,7 +260,8 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
                     cls = "Server"
                     notes.append("phys:unverified")
                 else:
-                    cls = "VirtualMachine" if verdict == "virtual" else "Server"
+                    cls = ("VirtualMachine" if verdict.startswith("virtual")
+                           else "Server")
                     notes.append(vsrc)
         if cls == "Server" and tg.get("类型") == "DB":
             notes.append("tag:类型=DB")
@@ -262,7 +270,9 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         row = base_row(h, name, cls, notes)
         row["description"] = clean("zbx: " + "; ".join(n for n in notes if n))
         if cls == "VirtualMachine":
-            row["virtualhost_id"] = VM_HOST_PLACEHOLDER
+            # tag 判定的公有云资源挂 Cloud 占位桶，其余挂 Hypervisor 占位桶
+            row["virtualhost_id"] = (CLOUD_PLACEHOLDER if any("ecs" in n for n in notes)
+                                     else VM_HOST_PLACEHOLDER)
         if cls == "DBServer":
             row["system_id"] = (oracle_map or {}).get(name) or DB_HOST_PLACEHOLDER
         by_cls[cls].append(row)
