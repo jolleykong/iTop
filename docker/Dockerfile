@@ -31,7 +31,7 @@ RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|secu
 RUN { \
       echo 'upload_max_filesize=64M'; \
       echo 'post_max_size=80M'; \
-      echo 'memory_limit=512M'; \
+      echo 'memory_limit=1024M'; \
       echo 'max_execution_time=300'; \
       echo 'date.timezone=Asia/Shanghai'; \
       echo 'session.save_path="/tmp"'; \

@@ -216,6 +216,7 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
         f"stale(untouched)={max(0, len(existing) - n_upd)}")
 
     # 触发同步执行（synchro_exec.php 仅执行暂存表已装载的数据）
+    # 不传 max_chunk_size：分块模式仅支持 CLI；HTTP 模式整体执行（web memory_limit=1024M）
     form = {"auth_user": ITOP_USER, "auth_pwd": ITOP_PWD, "data_sources": str(ds_id)}
     data = urllib.parse.urlencode(form).encode()
     import base64
