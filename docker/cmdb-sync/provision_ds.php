@@ -42,7 +42,7 @@ $aDsDefs = [
         'scope_class' => 'Server',
         'desc' => 'Zabbix host sync -> Server (agent hosts + iLo hardware)',
         'attrs' => [
-            ['attcode' => 'name', 'reconcile' => true, 'update' => false],
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
@@ -55,7 +55,7 @@ $aDsDefs = [
         'scope_class' => 'NetworkDevice',
         'desc' => 'Zabbix host sync -> NetworkDevice (SNMP-only hosts)',
         'attrs' => [
-            ['attcode' => 'name', 'reconcile' => true, 'update' => false],
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
@@ -68,7 +68,7 @@ $aDsDefs = [
         'scope_class' => 'StorageSystem',
         'desc' => 'Zabbix host sync -> StorageSystem (name-pattern storage hosts)',
         'attrs' => [
-            ['attcode' => 'name', 'reconcile' => true, 'update' => false],
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],

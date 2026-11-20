@@ -83,6 +83,7 @@ services:
       ITOP_ADMIN_PWD: "${ITOP_ADMIN_PWD:-}"
       CMDB_ORG: "${CMDB_ORG:-ITOPS}"
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-14400}"
+      SYNC_HTTP_TIMEOUT: "${SYNC_HTTP_TIMEOUT:-600}"
       ITOP_DB_HOST: itop-db
       ITOP_DB_NAME: itop
       ITOP_DB_USER: itop
