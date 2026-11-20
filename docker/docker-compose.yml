@@ -54,7 +54,7 @@ services:
     environment:
       ZBX_URL: "${ZBX_URL}"
       ZBX_TOKEN: "${ZBX_TOKEN}"
-      ITOP_URL: "http://itop-web:8081"
+      ITOP_URL: "http://itop-web:80"
       ITOP_USER: "${ITOP_USER:-admin}"
       ITOP_ADMIN_PWD: "${ITOP_ADMIN_PWD:-}"
       CMDB_ORG: "${CMDB_ORG:-ITOPS}"
