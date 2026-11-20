@@ -18,6 +18,8 @@ RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|secu
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j"$(nproc)" \
       gd mysqli pdo_mysql soap curl zip intl mbstring ldap opcache \
+    && pecl install apcu \
+    && docker-php-ext-enable apcu \
     && a2enmod rewrite headers \
     && echo 'ServerName localhost' > /etc/apache2/conf-available/servername.conf \
     && a2enconf servername \
@@ -25,12 +27,14 @@ RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|secu
     && rm -rf /var/lib/apt/lists/*
 
 # PHP 运行参数（setup 与数据导入/同步需求）
+# post_max_size 必须严格大于 upload_max_filesize（iTop setup 检查项）
 RUN { \
       echo 'upload_max_filesize=64M'; \
-      echo 'post_max_size=64M'; \
+      echo 'post_max_size=80M'; \
       echo 'memory_limit=512M'; \
       echo 'max_execution_time=300'; \
       echo 'date.timezone=Asia/Shanghai'; \
+      echo 'session.save_path="/tmp"'; \
     } > /usr/local/etc/php/conf.d/itop.ini
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
