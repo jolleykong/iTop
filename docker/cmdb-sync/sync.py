@@ -67,7 +67,7 @@ TPL_PATTERNS = [
     ("DBServer", re.compile(r"^Oracle by ODBC|Oracle backup checker|MySQL by ODBC", re.I), False),
     ("NetworkDevice", re.compile(r"Cisco|\bASA\b|Router|\bF5\b|Brocade|\bSwitch\b|Juniper|Generic by SNMP", re.I), False),
     ("StorageSystem", re.compile(r"XSKY|OceanStor|Unity|SANGFOR|Storage|\bNAS\b", re.I), False),
-    ("Server", re.compile(r"Hypervisor|ESXi", re.I), False),  # 虚拟化宿主
+    ("Hypervisor", re.compile(r"Hypervisor|ESXi", re.I), False),  # 虚拟化宿主（v3.9: iTop Hypervisor 类，供 VM.virtualhost_id 挂接）
     ("Server", re.compile(r"BMC|iDRAC|\biLO\b|\bIMM\b|PowerEdge|ProLiant|Supermicro", re.I), True),  # BMC
 ]
 
@@ -190,7 +190,8 @@ def build_dictionary(hosts: list, by_cls: dict) -> tuple:
         vnd = clean(inv.get("vendor")) or FALLBACK_BRAND
         vendors.setdefault(mdl, {})
         vendors[mdl][vnd] = vendors[mdl].get(vnd, 0) + 1
-    for cls, tval in (("Server", "Server"), ("NetworkDevice", "NetworkDevice"),
+    for cls, tval in (("Server", "Server"), ("Hypervisor", "Server"),
+                      ("NetworkDevice", "NetworkDevice"),
                       ("StorageSystem", "StorageSystem")):
         for row in by_cls.get(cls, []):
             mdl = clean(row.get("model_id"))
@@ -292,10 +293,41 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
     stats = {"merged_bmc": [], "unlinked_bmc": [], "merged_osagent": [],
              "counts": {}}
     by_cls = {"Server": [], "VirtualMachine": [], "DBServer": [],
-              "NetworkDevice": [], "StorageSystem": []}
+              "NetworkDevice": [], "StorageSystem": [], "Hypervisor": []}
     # v3.8: phys:unverified 且与 VMware Guest 同 IP 的 Server 行，按 IP 归组
     # 待并入 VM 行（见下方 OS agent 合并阶段）
     osagent_by_ip = {}
+
+    # v3.9: 宿主索引 —— Hypervisor 类 host（VMware Hypervisor LLD 技术名={#HV.UUID}，
+    # display 名={#HV.ID}/IP；ESXi SNMP host 名=IP）建立 uuid/name/ip 三钥匙索引，
+    # 供 VM 行按 guest host tag（hv_uuid/hv_id/hv_name，Zabbix Guest host prototype
+    # 自动下发）挂接真实宿主；无 tag 或未解析 -> 占位桶 ZBX-VM-Unassigned-Host
+    hv_uuid_map, hv_name_map = {}, {}
+    for h in hosts:
+        cls0, _, _ = tpl_class(h)
+        if cls0 != "Hypervisor":
+            continue
+        disp = clean(h.get("name") or h.get("host"))
+        tech = clean(h.get("host") or "")
+        if disp and tech:
+            hv_uuid_map[tech.lower()] = disp
+        if disp:
+            hv_name_map[disp.lower()] = disp
+            ip0 = main_ip(h)
+            if ip0:
+                hv_name_map[ip0] = disp
+
+    def resolve_hv(tg: dict):
+        """按 tag 优先级解析宿主 display 名，未命中返回 None"""
+        for k in ("hv_uuid", "hv_id", "hv", "hv_name"):
+            v = (tg.get(k) or "").strip().lower()
+            if not v:
+                continue
+            if v in hv_uuid_map:
+                return hv_uuid_map[v]
+            if v in hv_name_map:
+                return hv_name_map[v]
+        return None
 
     for h in hosts:
         name = clean(h.get("name") or h.get("host"))
@@ -334,12 +366,19 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
             notes.append("tag:类型=DB")
         if cls == "VirtualMachine":
             notes.append("phys:virtual-confirmed")
+        # v3.9: VM 挂真实宿主（tag 解析），解析成功记 host:线索进 description
+        hv_tgt = resolve_hv(tg) if cls == "VirtualMachine" else None
+        if hv_tgt:
+            notes.append(f"host:{hv_tgt}")
         row = base_row(h, name, cls, notes)
         row["description"] = clean("zbx: " + "; ".join(n for n in notes if n))
         if cls == "VirtualMachine":
-            # tag 判定的公有云资源挂 Cloud 占位桶，其余挂 Hypervisor 占位桶
+            # tag 判定的公有云资源挂 Cloud 占位桶；已解析宿主挂真实 Hypervisor，
+            # 其余挂占位桶
             row["virtualhost_id"] = (CLOUD_PLACEHOLDER if any("ecs" in n for n in notes)
-                                     else VM_HOST_PLACEHOLDER)
+                                     else (hv_tgt or VM_HOST_PLACEHOLDER))
+            if hv_tgt:
+                stats["counts"]["vm_on_real_host"] = stats["counts"].get("vm_on_real_host", 0) + 1
         if cls == "DBServer":
             row["system_id"] = (oracle_map or {}).get(name) or DB_HOST_PLACEHOLDER
         by_cls[cls].append(row)
@@ -404,6 +443,7 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         by_cls["Server"] = [r for r in by_cls["Server"] if id(r) not in drop_ids]
 
     by_cls["VirtualMachine"].sort(key=lambda r: r["name"])
+    by_cls["Hypervisor"].sort(key=lambda r: r["name"])
     by_cls["DBServer"].sort(key=lambda r: r["name"])
     by_cls["NetworkDevice"].sort(key=lambda r: r["name"])
     by_cls["StorageSystem"].sort(key=lambda r: r["name"])
@@ -626,6 +666,10 @@ def run_once() -> bool:
     log(f"OS agent 并入 VM {len(stats['merged_osagent'])} 台: " +
         ", ".join(stats["merged_osagent"][:8]) +
         (" ..." if len(stats["merged_osagent"]) > 8 else ""))
+    n_vm = stats["counts"].get("VirtualMachine", 0)
+    n_real = stats["counts"].get("vm_on_real_host", 0)
+    log(f"VM 宿主挂接: {n_real}/{n_vm} 台挂真实 Hypervisor"
+        f", 其余 {n_vm - n_real} 台待 Zabbix Guest host tag 下发后自动迁移")
 
     if ITOP_PWD in PLACEHOLDERS:
         log("SKIPPED push: ITOP_ADMIN_PWD not set — fill /opt/itop/.env and 'docker compose restart sync'")
@@ -644,6 +688,9 @@ def run_once() -> bool:
     log(f"字典: Brand {len(brand_rows)} / Model {len(model_rows)}")
     ok &= push("zbx-brands", brand_rows, ["name"])
     ok &= push("zbx-models", model_rows, ["name", "type", "brand_id"])
+    # v3.9: 宿主先行——VM.virtualhost_id 按 name 解析，Hypervisor 行须先入库
+    ok &= push("zbx-hypervisors", by_cls["Hypervisor"],
+               ["name", "org_id", "status", "description"])
     # v2: 模板证据优先分类；v2.1: DB 实例挂承载主机、VM 挂占位宿主、全量装载启用 obsolete 判定
     ok &= push("zbx-vms", by_cls["VirtualMachine"],
                ["name", "org_id", "status", "managementip", "description", "virtualhost_id"])

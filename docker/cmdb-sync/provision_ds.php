@@ -74,6 +74,17 @@ $aDsDefs = [
         ],
     ],
     [
+        'name' => 'zbx-hypervisors',
+        'scope_class' => 'Hypervisor',
+        'desc' => 'Zabbix host sync -> Hypervisor (VMware Hypervisor LLD / ESXi SNMP; VM.virtualhost_id real target)',
+        'attrs' => [
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
+            ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+            ['attcode' => 'status', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'description', 'reconcile' => false, 'update' => true],
+        ],
+    ],
+    [
         'name' => 'zbx-dbservers',
         'scope_class' => 'DBServer',
         'desc' => 'Zabbix host sync -> DBServer (Oracle/MySQL by ODBC, linked to host via {$ORACLE.HOST})',
