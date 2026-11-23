@@ -213,6 +213,9 @@ def base_row(h: dict, name: str, cls: str, notes: list) -> dict:
     inv = h.get("inventory") or {}
     row = {
         "name": name,
+        # v3.10: 技术名（host 字段）——agent host 常改可见名（如 VS-BJDNS01 -> "130"），
+        # 与 vCenter guest 可见名配对去重时需要原始技术名
+        "_tech": clean(h.get("host") or ""),
         "org_id": ORG_NAME,
         "status": status_of(h),
         "managementip": clean(main_ip(h)),
@@ -418,6 +421,48 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
             keep_servers.append(b)
             stats["unlinked_bmc"].append(b["name"])
     by_cls["Server"] = sorted(keep_servers, key=lambda r: r["name"])
+
+    # v3.10: VM 双产去重 —— 同一台 VM 在 Zabbix 常有两个 host（OS agent host 带
+    # virt tag/inventory 判成 VirtualMachine + vCenter 发现的 VMware Guest host）。
+    # guest 侧有模板硬证据和真实宿主，作为保留对象；agent 侧行（无模板证据）并入：
+    # description 追加 os-agent:{OS host 名}，agent 侧更准的 managementip 回填 guest
+    # 空缺。配对双钥匙：IP 相等 或 agent 技术名=guest 可见名（BSJ 案例：guest host
+    # 无接口 IP，但 agent host 技术名未改、可见名被人工改成 "130"）
+    def _is_guest_row(r):
+        return any(n.startswith("tpl:") and "VMware Guest" in n for n in r["_notes"])
+
+    vm_guest_by_key = {}
+    for r in by_cls["VirtualMachine"]:
+        if not _is_guest_row(r):
+            continue
+        keys = set()
+        if r.get("managementip"):
+            keys.add(r["managementip"])
+        if r["name"]:
+            keys.add(r["name"].lower())
+        for k in keys:
+            vm_guest_by_key.setdefault(k, r)
+    kept_vms, touch_vms = [], []
+    for r in by_cls["VirtualMachine"]:
+        if _is_guest_row(r):
+            kept_vms.append(r)
+            continue
+        tgt = None
+        if r.get("managementip"):
+            tgt = vm_guest_by_key.get(r["managementip"])
+        if tgt is None and r.get("_tech"):
+            tgt = vm_guest_by_key.get(r["_tech"].lower())
+        if tgt is None or tgt is r:
+            kept_vms.append(r)
+            continue
+        tgt["_notes"].append(f"os-agent:{r['name']}")
+        if not tgt.get("managementip") and r.get("managementip"):
+            tgt["managementip"] = r["managementip"]
+        stats["merged_osagent"].append(f"{r['name']} -> {tgt['name']} (vm-dedup)")
+        touch_vms.append(tgt)
+    for tgt in touch_vms:
+        tgt["description"] = clean("zbx: " + "; ".join(n for n in tgt["_notes"] if n))
+    by_cls["VirtualMachine"] = kept_vms
 
     # v3.8: OS agent 视角并入 VM —— 同 IP 已有 VMware Guest（vCenter 硬证据）时，
     # 该 host 是 VM 的 OS 层 agent。iTop 模型里 VM 的 OS 层就是 VirtualMachine
