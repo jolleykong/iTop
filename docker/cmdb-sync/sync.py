@@ -493,12 +493,19 @@ def main():
     if not ZBX_URL:
         log("FATAL: ZBX_URL not set")
         sys.exit(1)
+    # --once: 单次运行后退出（手动触发刷新用，不进入定时循环）
+    once = "--once" in sys.argv
     while True:
         try:
             ok = run_once()
-            log(f"cycle finished ok={ok}, next in {INTERVAL}s")
+            log(f"cycle finished ok={ok}"
+                + ("" if once else f", next in {INTERVAL}s"))
         except Exception as e:  # noqa: BLE001
             log(f"cycle FAILED: {e}; retry in {INTERVAL}s")
+            if once:
+                sys.exit(1)
+        if once:
+            break
         time.sleep(INTERVAL)
 
 
