@@ -94,6 +94,7 @@ $aDsDefs = [
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
             ['attcode' => 'serialnumber', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'brand_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'model_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'description', 'reconcile' => false, 'update' => true],
         ],
@@ -108,6 +109,7 @@ $aDsDefs = [
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
             ['attcode' => 'serialnumber', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'brand_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'model_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'networkdevicetype_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
         ],
@@ -122,6 +124,7 @@ $aDsDefs = [
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'managementip', 'reconcile' => false, 'update' => true],
             ['attcode' => 'serialnumber', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'brand_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'model_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
         ],
     ],
@@ -255,8 +258,31 @@ foreach ($aDsDefs as $aDef) {
         $oRows = new DBObjectSet(DBSearch::FromOQL("SELECT SynchroAttribute WHERE sync_source_id=$iDsId"));
     }
     $iChanged = 0;
+    // 先收集现有映射行（attcode => row）
+    $aExisting = [];
     while ($oAtt = $oRows->Fetch()) {
-        $sCode = $oAtt->Get('attcode');
+        $aExisting[$oAtt->Get('attcode')] = $oAtt;
+    }
+    // v3.6: 定义中存在但映射行缺失的 attr —— 直接创建映射行
+    // （staged 表列在 DS 创建时已按 scope_class 全属性生成，无需重建 DS）
+    foreach ($aDef['attrs'] as $a) {
+        if (isset($aExisting[$a['attcode']])) {
+            continue;
+        }
+        $sClass = (!empty($a['extkey'])) ? 'SynchroAttExtKey' : 'SynchroAttribute';
+        $oNew = MetaModel::NewObject($sClass);
+        $oNew->Set('sync_source_id', $iDsId);
+        $oNew->Set('attcode', $a['attcode']);
+        $oNew->Set('reconcile', (bool)$a['reconcile']);
+        $oNew->Set('update', (bool)$a['update']);
+        if ($sClass === 'SynchroAttExtKey') {
+            $oNew->Set('reconciliation_attcode', 'name');
+        }
+        $oNew->DBInsert();
+        echo "[provision-ds] DS '{$aDef['name']}' added missing attr '{$a['attcode']}' ($sClass)\n";
+        $iChanged++;
+    }
+    foreach ($aExisting as $sCode => $oAtt) {
         $aMy = null;
         foreach ($aDef['attrs'] as $a) {
             if ($a['attcode'] === $sCode) { $aMy = $a; break; }

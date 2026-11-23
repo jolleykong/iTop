@@ -217,6 +217,9 @@ def base_row(h: dict, name: str, cls: str, notes: list) -> dict:
         "managementip": clean(main_ip(h)),
         "serialnumber": clean_serial(inv),
         "model_id": clean(inv.get("model")),
+        # v3.6: Server/PhysicalDevice 有独立品牌字段（前端"品牌"列），
+        # vendor 直填；空值 staged 不覆盖，待 hw.vendor 采集后自动归位
+        "brand_id": clean(inv.get("vendor")),
         "_notes": notes,
         "_cls": cls,
     }
@@ -339,6 +342,9 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
                 tgt["serialnumber"] = b["serialnumber"]
             if not tgt.get("model_id") and b.get("model_id"):
                 tgt["model_id"] = b["model_id"]
+            # v3.6: OS 侧 vendor 空时用 BMC 侧品牌回填（BMC SNMP 普遍带 vendor）
+            if not tgt.get("brand_id") and b.get("brand_id"):
+                tgt["brand_id"] = b["brand_id"]
             # 带外信息落点：iLo/iDRAC IP 写入 description，前端可见可搜
             # （iTop 无原生 BMC 类，合并模式下 IP 是唯一的带外承载点）
             tgt["_notes"].append(
@@ -592,12 +598,12 @@ def run_once() -> bool:
     ok &= push("zbx-vms", by_cls["VirtualMachine"],
                ["name", "org_id", "status", "managementip", "description", "virtualhost_id"])
     ok &= push("zbx-servers", by_cls["Server"],
-               ["name", "org_id", "status", "managementip", "serialnumber", "model_id", "description"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "brand_id", "model_id", "description"])
     ok &= push("zbx-dbservers", by_cls["DBServer"], ["name", "org_id", "system_id"])
     ok &= push("zbx-network", by_cls["NetworkDevice"],
-               ["name", "org_id", "status", "managementip", "serialnumber", "model_id", "networkdevicetype_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "brand_id", "model_id", "networkdevicetype_id"])
     ok &= push("zbx-storage", by_cls["StorageSystem"],
-               ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
+               ["name", "org_id", "status", "managementip", "serialnumber", "brand_id", "model_id"])
 
     reconcile_staging_location()
     return ok
