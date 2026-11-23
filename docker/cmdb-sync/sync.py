@@ -40,6 +40,9 @@ ITOP_DB_NAME = os.environ.get("ITOP_DB_NAME", "itop")
 ITOP_DB_USER = os.environ.get("ITOP_DB_USER", "itop")
 ITOP_DB_PASS = os.environ.get("ITOP_DB_PASS", "ItopDb#2026")
 ORG_NAME = os.environ.get("CMDB_ORG", "ITOPS")
+# 暂存区位置（引擎不管理 location：staged 该字段恒空 + 空值不覆盖规则，
+# 故位置标记由每轮引擎外对账维护，跟随 phys:unverified 判定自动进出）
+STAGING_LOCATION_NAME = os.environ.get("STAGING_LOCATION_NAME", "ZBX待分类暂存区")
 INTERVAL = int(os.environ.get("SYNC_INTERVAL_SECONDS", "14400"))
 TIMEOUT = int(os.environ.get("SYNC_HTTP_TIMEOUT", "120"))
 
@@ -445,6 +448,65 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
     return ok
 
 
+def itop_db_sql(sql: str) -> bool:
+    """mysql CLI 直连 iTop 库执行 SQL（引擎外对账用，如暂存区位置）"""
+    try:
+        r = subprocess.run(
+            ["mysql", "-h", os.environ.get("ITOP_DB_HOST", "itop-db"),
+             "-u", os.environ.get("ITOP_DB_USER", "itop"),
+             f"-p{os.environ.get('ITOP_DB_PASS', '')}",
+             "--default-character-set=utf8mb4",
+             os.environ.get("ITOP_DB_NAME", "itop"), "-N", "-e", sql],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            log(f"itop-db sql FAILED: {(r.stderr or '').strip()[:200]}")
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"itop-db sql ERROR: {e}")
+        return False
+
+
+def reconcile_staging_location():
+    """暂存区位置对账：location 跟随 phys:unverified 判定自动进出。
+    - 已归位（description 不再含 phys:unverified）→ 位置清空
+    - 新增 unverified 的在册物理设备 → 挂入暂存位置
+    - obsolete 遗留对象不参与（前端默认隐藏）"""
+    if not os.environ.get("ITOP_DB_PASS") or \
+            os.environ.get("ITOP_DB_PASS") in PLACEHOLDERS:
+        return
+    q = lambda s: s.replace("'", "''")
+    sql = f"""
+    SELECT id FROM location WHERE name='{q(STAGING_LOCATION_NAME)}'
+      AND org_id=(SELECT id FROM organization WHERE name='{q(ORG_NAME)}')
+    """
+    try:
+        r = subprocess.run(
+            ["mysql", "-h", os.environ.get("ITOP_DB_HOST", "itop-db"),
+             "-u", os.environ.get("ITOP_DB_USER", "itop"),
+             f"-p{os.environ.get('ITOP_DB_PASS', '')}",
+             "--default-character-set=utf8mb4",
+             os.environ.get("ITOP_DB_NAME", "itop"), "-N", "-e", sql],
+            capture_output=True, text=True, timeout=60)
+        loc_id = (r.stdout or "").strip()
+    except Exception as e:  # noqa: BLE001
+        log(f"staging-reconcile: locate id ERROR: {e}")
+        return
+    if not loc_id.isdigit():
+        log(f"staging-reconcile: location '{STAGING_LOCATION_NAME}' not found, skip")
+        return
+    ok = itop_db_sql(f"""
+    UPDATE physicaldevice p JOIN functionalci f ON f.id=p.id
+    SET p.location_id = IF(f.description LIKE '%phys:unverified%', {loc_id}, 0)
+    WHERE f.finalclass='Server'
+      AND f.org_id=(SELECT id FROM organization WHERE name='{q(ORG_NAME)}')
+      AND p.status != 'obsolete'
+      AND (p.location_id={loc_id} OR f.description LIKE '%phys:unverified%')
+    """)
+    if ok:
+        log(f"staging-reconcile: location '{STAGING_LOCATION_NAME}' synced (id={loc_id})")
+
+
 def run_once() -> bool:
     hosts = zbx_rpc("host.get", {
         "output": ["host", "name", "status"],
@@ -486,6 +548,8 @@ def run_once() -> bool:
                ["name", "org_id", "status", "managementip", "serialnumber", "model_id", "networkdevicetype_id"])
     ok &= push("zbx-storage", by_cls["StorageSystem"],
                ["name", "org_id", "status", "managementip", "serialnumber", "model_id"])
+
+    reconcile_staging_location()
     return ok
 
 
