@@ -235,6 +235,12 @@ def is_db_host(h: dict) -> bool:
     return any(RE_DB_TPL.search(t.get("name") or "") for t in h.get("parentTemplates") or [])
 
 
+def has_db_tag(tg: dict) -> bool:
+    """v3.7: host tag type=Database —— 用户治理口径，显式标注的数据库项目。
+    仅在无模板证据时兜底（模板证据优先）。"""
+    return (tg.get("type") or "").strip().lower() == "database"
+
+
 def build_oracle_map(hosts: list) -> dict:
     """解析 DB 实例 host -> 承载 OS host 的 name。
     双通道：{$ORACLE.HOST} 宏值 + DB host 自身接口 IP（Zabbix 侧 ODBC host
@@ -295,6 +301,17 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         cls, src, is_bmc = tpl_class(h)
         notes = [src] if src else []
 
+        if cls is None and has_db_tag(tg):
+            # v3.7: tag type=Database 显式标注 —— 双产：
+            #   DBServer（数据库实例层，system_id 指向自身同名对象）
+            #   + OS 层继续常规判定（Server/VirtualMachine，承载 hw 信息）
+            notes.append("tag:type=Database")
+            db_row = base_row(h, name, "DBServer", list(notes))
+            db_row["description"] = clean("zbx: " + "; ".join(n for n in notes if n))
+            db_row["system_id"] = name  # 自身 Server/VM 对象（同名，引擎按 name 对账）
+            by_cls["DBServer"].append(db_row)
+            stats["counts"]["DBServer_by_tag"] = stats["counts"].get("DBServer_by_tag", 0) + 1
+            notes = []  # OS 层不带 DB 标注，避免 description 重复
         if cls is None:
             # 无模板证据：v3 双来源判定（inv hw.virt 优先，tag virt 手工兜底），
             # 两来源均无 → 保守 Server 暂挂（phys:unverified）
