@@ -38,6 +38,28 @@ echo "[provision-ds] logged in as $sAuthUser\n";
 // 与 sync.py build_rows 的列保持一致
 $aDsDefs = [
     [
+        'name' => 'zbx-brands',
+        'scope_class' => 'Brand',
+        'desc' => 'Zabbix inventory vendor -> Brand dictionary (auto-maintained by zbx2itop)',
+        'delete_policy' => 'ignore',
+        // Brand 是 Typology 全局字典，无 org_id 字段
+        'attrs' => [
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
+        ],
+    ],
+    [
+        'name' => 'zbx-models',
+        'scope_class' => 'Model',
+        'desc' => 'Zabbix inventory model -> Model dictionary (brand_id reconciled by Brand name)',
+        'delete_policy' => 'ignore',
+        // Model 同为 Typology 全局字典，无 org_id 字段；type 为必填枚举（设备类型）
+        'attrs' => [
+            ['attcode' => 'name', 'reconcile' => true, 'update' => true],
+            ['attcode' => 'type', 'reconcile' => false, 'update' => true],
+            ['attcode' => 'brand_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
+        ],
+    ],
+    [
         'name' => 'zbx-vms',
         'scope_class' => 'VirtualMachine',
         'desc' => 'Zabbix host sync -> VirtualMachine (VMware Guest template, vCenter confirmed)',
@@ -173,8 +195,11 @@ foreach ($aDsDefs as $aDef) {
     $oDS->Set('user_id', $oUser->GetKey());
     $oDS->Set('scope_class', $aDef['scope_class']);
     $oDS->Set('scope_restriction', '');
-    $oDS->Set('delete_policy', 'update');
-    $oDS->Set('delete_policy_update', 'status:obsolete');
+    $oDS->Set('delete_policy', $aDef['delete_policy'] ?? 'update');
+    if (($aDef['delete_policy'] ?? 'update') === 'update') {
+        // 字典类（Brand/Model）无 status 字段，不能走 status:obsolete，用 ignore
+        $oDS->Set('delete_policy_update', 'status:obsolete');
+    }
     $oDS->Set('full_load_periodicity', 0);
     // 不传 attribute_list：iTop 会自动为 scope_class 全属性生成默认映射行，
     // 随后按本定义逐行归一化（与 UI 表单编辑等效）
@@ -220,8 +245,10 @@ foreach ($aDsDefs as $aDef) {
         $oDS->Set('user_id', $oUser2->GetKey());
         $oDS->Set('scope_class', $aDef['scope_class']);
         $oDS->Set('scope_restriction', '');
-        $oDS->Set('delete_policy', 'update');
-        $oDS->Set('delete_policy_update', 'status:obsolete');
+        $oDS->Set('delete_policy', $aDef['delete_policy'] ?? 'update');
+        if (($aDef['delete_policy'] ?? 'update') === 'update') {
+            $oDS->Set('delete_policy_update', 'status:obsolete');
+        }
         $oDS->Set('full_load_periodicity', $iLoadPeriodicity);
         $iDsId = $oDS->DBInsert();
         echo "[provision-ds] DS '{$aDef['name']}' recreated id=$iDsId\n";

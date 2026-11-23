@@ -170,6 +170,44 @@ def virt_evidence(h: dict, tg: dict) -> tuple:
     return None, None
 
 
+FALLBACK_BRAND = os.environ.get("FALLBACK_BRAND", "Generic")
+
+
+def build_dictionary(hosts: list, by_cls: dict) -> tuple:
+    """v3.5: 从 inventory vendor/model 构造 Brand/Model 字典行。
+    Server.model_id 是指向 Model 类的外键（按 name 解析），推送前 Model 行必须存在，
+    否则引擎 FK 解析失败留空（此前 467/469 台 model 空的根因）。
+    同一 model 文本出现多个 vendor 时取多数票；无 vendor 的 fallback Generic。
+    Model.type（设备类型，必填枚举）按资产分类多数票：Server/NetworkDevice/StorageSystem。
+    Brand/Model 是 Typology 全局字典，无 org_id 字段。"""
+    vendors: dict = {}
+    types: dict = {}
+    for h in hosts:
+        inv = h.get("inventory") or {}
+        mdl = clean(inv.get("model"))
+        if not mdl:
+            continue
+        vnd = clean(inv.get("vendor")) or FALLBACK_BRAND
+        vendors.setdefault(mdl, {})
+        vendors[mdl][vnd] = vendors[mdl].get(vnd, 0) + 1
+    for cls, tval in (("Server", "Server"), ("NetworkDevice", "NetworkDevice"),
+                      ("StorageSystem", "StorageSystem")):
+        for row in by_cls.get(cls, []):
+            mdl = clean(row.get("model_id"))
+            if mdl:
+                types.setdefault(mdl, {})
+                types[mdl][tval] = types[mdl].get(tval, 0) + 1
+    brands = {FALLBACK_BRAND}
+    models = []
+    for mdl, vs in sorted(vendors.items()):
+        vendor = max(vs.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        brands.add(vendor)
+        tval = max(types[mdl].items(), key=lambda kv: kv[1])[0] if mdl in types else "Server"
+        models.append({"name": mdl, "brand_id": vendor, "type": tval})
+    brand_rows = [{"name": b} for b in sorted(brands)]
+    return brand_rows, models
+
+
 def base_row(h: dict, name: str, cls: str, notes: list) -> dict:
     inv = h.get("inventory") or {}
     row = {
@@ -544,6 +582,12 @@ def run_once() -> bool:
             + (f" ... 共{len(db_unlinked)}台" if len(db_unlinked) > 12 else ""))
 
     ok = True
+    # v3.5: 字典先行——Brand/Model 先于资产推送并立即执行，
+    # 否则同轮 servers 的 model_id 外键按 name 解析找不到目标行
+    brand_rows, model_rows = build_dictionary(hosts, by_cls)
+    log(f"字典: Brand {len(brand_rows)} / Model {len(model_rows)}")
+    ok &= push("zbx-brands", brand_rows, ["name"])
+    ok &= push("zbx-models", model_rows, ["name", "type", "brand_id"])
     # v2: 模板证据优先分类；v2.1: DB 实例挂承载主机、VM 挂占位宿主、全量装载启用 obsolete 判定
     ok &= push("zbx-vms", by_cls["VirtualMachine"],
                ["name", "org_id", "status", "managementip", "description", "virtualhost_id"])
