@@ -141,9 +141,11 @@ def clean_serial(inv: dict) -> str:
 
 def virt_evidence(h: dict, tg: dict) -> tuple:
     """v3 双来源判定物理性（覆盖 agent 关机/未装 agent 场景）：
-    来源1（自动，优先）：inventory.type —— hw.virt item 上报的标准化词表
-      （Physical server / Virtual machine）。inventory 是最后已知值持久化，
-      设备关机后仍保留，只对"从未采集过"的设备失效。
+    来源1（自动，优先）：inventory.type —— hw.virt item 上报的物理性词表。
+      inventory 是最后已知值持久化，设备关机后仍保留，只对"从未采集过"的设备失效。
+      词表宽松匹配（contains，大小写不敏感）：兼容 "Physical server"、
+      "Physical (physical)"、"Virtual machine"、"Virtual machine (virtual)" 等
+      item 侧各种写法；"unknown"、"Rack Mount Chassis" 等无关键词值不判定。
     来源2（手工兜底）：host tag `virt`，值 physical|virtual|ecs（大小写不敏感），
       用于新上架/老 agent 未部署 hw_serial.conf 的设备人工标注，以及公有云资源
       类型指定（inv 来源无云概念，tag:ecs 比 inv 的 generic virtual 更具体，
@@ -152,10 +154,10 @@ def virt_evidence(h: dict, tg: dict) -> tuple:
     t_all = {str(k).strip().lower(): str(v or "").strip().lower() for k, v in tg.items()}
     if t_all.get("virt") == "ecs":
         return "virtual-ecs", "virt:tag-ecs"
-    it = clean((h.get("inventory") or {}).get("type"))
-    if it == "Physical server":
+    it = clean((h.get("inventory") or {}).get("type")).lower()
+    if "physical" in it:
         return "physical", "phys:inv-virt"
-    if it == "Virtual machine":
+    if "virtual" in it:
         return "virtual", "virt:inv-virt"
     t = (tg.get("virt") or "").strip().lower()
     if t == "physical":
