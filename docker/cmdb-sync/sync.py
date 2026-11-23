@@ -289,9 +289,13 @@ def build_oracle_map(hosts: list) -> dict:
 
 def build_all(hosts: list, oracle_map: dict = None) -> tuple:
     """分类 + BMC 关联合并。返回 {cls: [rows]} 及统计。"""
-    stats = {"merged_bmc": [], "unlinked_bmc": [], "counts": {}}
+    stats = {"merged_bmc": [], "unlinked_bmc": [], "merged_osagent": [],
+             "counts": {}}
     by_cls = {"Server": [], "VirtualMachine": [], "DBServer": [],
               "NetworkDevice": [], "StorageSystem": []}
+    # v3.8: phys:unverified 且与 VMware Guest 同 IP 的 Server 行，按 IP 归组
+    # 待并入 VM 行（见下方 OS agent 合并阶段）
+    osagent_by_ip = {}
 
     for h in hosts:
         name = clean(h.get("name") or h.get("host"))
@@ -339,6 +343,8 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         if cls == "DBServer":
             row["system_id"] = (oracle_map or {}).get(name) or DB_HOST_PLACEHOLDER
         by_cls[cls].append(row)
+        if cls == "Server" and "phys:unverified" in notes and row.get("managementip"):
+            osagent_by_ip.setdefault(row["managementip"], []).append(row)
 
     # BMC host 关联合并：svr-iLo-IP-OS名 -> 同名 Server 行（OS host 视角）
     def is_bmc_row(r):
@@ -373,6 +379,30 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
             keep_servers.append(b)
             stats["unlinked_bmc"].append(b["name"])
     by_cls["Server"] = sorted(keep_servers, key=lambda r: r["name"])
+
+    # v3.8: OS agent 视角并入 VM —— 同 IP 已有 VMware Guest（vCenter 硬证据）时，
+    # 该 host 是 VM 的 OS 层 agent。iTop 模型里 VM 的 OS 层就是 VirtualMachine
+    # 本身，再单建 Server 会形成"孤儿 Server"（Server 视图看不到任何 VM 关联，
+    # 10.240.24.177/171 调查结论）：VM 行 description 补记 os-agent 线索，Server 行丢弃
+    vm_by_ip = {}
+    for r in by_cls["VirtualMachine"]:
+        if r.get("managementip"):
+            vm_by_ip.setdefault(r["managementip"], r)
+    drop_ids, touch_targets = set(), []
+    for ip, rows in sorted(osagent_by_ip.items()):
+        tgt = vm_by_ip.get(ip)
+        if tgt is None:
+            continue
+        for r in rows:
+            tgt["_notes"].append(f"os-agent:{r['name']}")
+            drop_ids.add(id(r))
+            stats["merged_osagent"].append(f"{r['name']} -> {tgt['name']}")
+        touch_targets.append(tgt)
+    for tgt in touch_targets:
+        tgt["description"] = clean("zbx: " + "; ".join(n for n in tgt["_notes"] if n))
+    if drop_ids:
+        by_cls["Server"] = [r for r in by_cls["Server"] if id(r) not in drop_ids]
+
     by_cls["VirtualMachine"].sort(key=lambda r: r["name"])
     by_cls["DBServer"].sort(key=lambda r: r["name"])
     by_cls["NetworkDevice"].sort(key=lambda r: r["name"])
@@ -593,6 +623,9 @@ def run_once() -> bool:
     log(f"BMC 关联合并 {len(stats['merged_bmc'])} 台: " +
         ", ".join(stats["merged_bmc"][:8]) + (" ..." if len(stats["merged_bmc"]) > 8 else ""))
     log(f"BMC 未关联(自建 Server) {len(stats['unlinked_bmc'])} 台")
+    log(f"OS agent 并入 VM {len(stats['merged_osagent'])} 台: " +
+        ", ".join(stats["merged_osagent"][:8]) +
+        (" ..." if len(stats["merged_osagent"]) > 8 else ""))
 
     if ITOP_PWD in PLACEHOLDERS:
         log("SKIPPED push: ITOP_ADMIN_PWD not set — fill /opt/itop/.env and 'docker compose restart sync'")
