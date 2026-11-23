@@ -59,7 +59,7 @@ DB_HOST_PLACEHOLDER = os.environ.get("DB_HOST_PLACEHOLDER", "ZBX-DB-Host-Unassig
 # 名称兜底规则（仅无模板证据的 host）
 RE_STORAGE = re.compile(r"存储|storage|NAS\b|SAN\b", re.I)
 # BMC host 命名钥匙：svr-iLo-{带外IP}-{OS主机名}（146/148 硬件 host 符合）
-RE_BMC_NAME = re.compile(r"^svr-(ilo|idrac|bmc|imm)-\d+\.\d+\.\d+\.\d+-(.+)$", re.I)
+RE_BMC_NAME = re.compile(r"^svr-(ilo|idrac|bmc|imm)-(\d+(?:\.\d+){3})-(.+)$", re.I)
 
 # 模板名 → 类别（按序匹配，先命中先定类）
 TPL_PATTERNS = [
@@ -295,13 +295,19 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
 
     for b in bmc_rows:
         m = RE_BMC_NAME.match(b["name"])
-        tgt = server_by_name.get(m.group(2).strip()) if m else None
+        tgt = server_by_name.get(m.group(3).strip()) if m else None
         if tgt is not None:
             if not tgt.get("serialnumber") and b.get("serialnumber"):
                 tgt["serialnumber"] = b["serialnumber"]
             if not tgt.get("model_id") and b.get("model_id"):
                 tgt["model_id"] = b["model_id"]
-            stats["merged_bmc"].append(f"{b['name']} -> {m.group(2)}")
+            # 带外信息落点：iLo/iDRAC IP 写入 description，前端可见可搜
+            # （iTop 无原生 BMC 类，合并模式下 IP 是唯一的带外承载点）
+            tgt["_notes"].append(
+                f"bmc:{m.group(1).lower()}:{m.group(2)}")
+            tgt["description"] = clean(
+                "zbx: " + "; ".join(n for n in tgt["_notes"] if n))
+            stats["merged_bmc"].append(f"{b['name']} -> {m.group(3)}")
         else:
             keep_servers.append(b)
             stats["unlinked_bmc"].append(b["name"])
