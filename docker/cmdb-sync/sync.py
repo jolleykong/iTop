@@ -689,6 +689,58 @@ def reconcile_staging_location():
         log(f"staging-reconcile: location '{STAGING_LOCATION_NAME}' synced (id={loc_id})")
 
 
+def enrich_bmc_fru(hosts: list) -> int:
+    """v3.11: BMC 主机 inventory 缺 serial/model/vendor 时，从 Inspur FRU LLD
+    item 现值回填。背景：Server Inspur BMC SNMPv3 模板的 FRU Discovery 已在采集
+    Product Serial Number/Product Name/Manufacturer Name（每台 20 个 FRU item），
+    但原型为 {#SNMPVALUE} 宏通配、无法在原型级映射 inventory_link（会把 Board
+    Manufacturer 等一起映射），故在同步侧补：一次 item.get 批量拉 FRU 现值，
+    注入 host['inventory']，后续 BMC 关联合并/字典构建自动消费。HP iLO 侧网络
+    不通（ICMP 不可达）与 Supermicro 模板缺采集项不在本函数范围。"""
+    def _inv(h):
+        return h.get("inventory") or {}
+
+    need = []
+    for h in hosts:
+        name = clean(h.get("name") or h.get("host"))
+        if not RE_BMC_NAME.match(name):
+            continue
+        inv = _inv(h)
+        if not inv.get("serialno_a") or not inv.get("model") or not inv.get("vendor"):
+            need.append(h)
+    if not need:
+        return 0
+    items = zbx_rpc("item.get", {
+        "output": ["hostid", "name", "lastvalue"],
+        "hostids": [h["hostid"] for h in need],
+        "search": {"key_": "fru.info"},
+        "limit": len(need) * 30,
+    })
+    by_host: dict = {}
+    for it in items:
+        by_host.setdefault(it["hostid"], {})[clean(it.get("name"))] = clean(it.get("lastvalue"))
+
+    def good(v):
+        return v and v not in ("0", "0.0")
+
+    n = 0
+    for h in need:
+        vals = by_host.get(h["hostid"]) or {}
+        inv = _inv(h)
+        changed = False
+        for k, src in (("serialno_a", "FRU INFO: Product Serial Number"),
+                       ("model", "FRU INFO: Product Name"),
+                       ("vendor", "FRU INFO: Manufacturer Name")):
+            v = vals.get(src, "")
+            if good(v) and not inv.get(k):
+                inv[k] = v
+                changed = True
+        if changed:
+            h["inventory"] = inv
+            n += 1
+    return n
+
+
 def run_once() -> bool:
     hosts = zbx_rpc("host.get", {
         "output": ["host", "name", "status"],
@@ -699,6 +751,10 @@ def run_once() -> bool:
         "selectTags": ["tag", "value"],
     })
     log(f"zabbix: {len(hosts)} hosts pulled")
+
+    n_fru = enrich_bmc_fru(hosts)
+    if n_fru:
+        log(f"BMC FRU 补充: {n_fru} 台 serial/model/vendor 从 Inspur FRU LLD item 回填")
 
     oracle_map = build_oracle_map(hosts)
     log(f"oracle hosts resolved via {{$ORACLE.HOST}}/ip: {len(oracle_map)}")
