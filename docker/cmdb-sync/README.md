@@ -60,6 +60,27 @@ SYNC_INTERVAL_SECONDS=14400
 3. 日志：`docker logs itop-sync`，含分类统计、BMC 合并/未关联清单、DBServer 挂接统计
 4. 一次性供给（建占位桶 + 归一化数据源映射）：`docker compose up provision`
 
+## 命名分层与 VM 双产（v3.13 定稿）
+
+同一台 VM 在 Zabbix 常有两个 host：OS 层 agent host（Windows/Linux 模板，
+active agent 按技术名匹配）与 VM 层 vCenter LLD guest host。命名规范：
+
+- **OS 层 agent host 占原生主机名**（技术名=可见名），active agent 的
+  HostnameItem 自动匹配；Windows 模板等 OS 级监控对象挂在此层
+- **VM 层 guest 可见名 = `{vCenter名}-VM`**：由 guest 根 host prototype 的
+  name 宏 `name={#VM.NAME}-VM` 统一下发（存量 host 随 LLD 重算自动改名，
+  不允许对 LLD host 直接 host.update 改可见名）
+- sync 配对钥匙（`_norm_name` 双向归一化）：IP 相等 / agent 技术名 = guest 可见名 /
+  agent 技术名剥 `-OS` = guest 可见名剥 `-VM`。agent 行并入 guest 行
+  （description 追加 `os-agent:{名}`），保留带宿主证据的 guest 对象
+- 已完成迁移：存量 323/358 guest 可见名下发 `-VM`；70 台可见名沦为 IP 的
+  agent host 归还真主机名（VR-SSAPP03 为代表案例：10967=VR-SSAPP03，
+  guest 12000=VR-SSAPP03-VM）
+- ext key 撞名坑：`DBServer.system_id` 目标类 FunctionalCI 按 name 解析，
+  同名 Server+VirtualMachine 残留双对象会导致解析不唯一 → create 失败
+  （errors=10 案例：finedb/FAQDB 等 8 名 10 行）。v3.10 已 obsolete 的
+  Server 残留对象需手工清理（REST core/delete），清理后自愈
+
 ## 人工核对入口（iTop UI）
 
 - 数据同步：管理工具 → 数据同步（每轮执行报告）

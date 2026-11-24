@@ -436,10 +436,16 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
     # virt tag/inventory 判成 VirtualMachine + vCenter 发现的 VMware Guest host）。
     # guest 侧有模板硬证据和真实宿主，作为保留对象；agent 侧行（无模板证据）并入：
     # description 追加 os-agent:{OS host 名}，agent 侧更准的 managementip 回填 guest
-    # 空缺。配对双钥匙：IP 相等 或 agent 技术名=guest 可见名（BSJ 案例：guest host
-    # 无接口 IP，但 agent host 技术名未改、可见名被人工改成 "130"）
+    # 空缺。配对钥匙（v3.13 分层命名后双向归一化）：
+    #   IP 相等；agent 技术名 = guest 可见名；agent 技术名剥 -OS 后缀 = guest
+    #   可见名剥 -VM 后缀。分层命名规范：OS 层 agent host 占原生主机名
+    #   （active agent HostnameItem 自动匹配），VM 层 guest 可见名={vCenter名}-VM
     def _is_guest_row(r):
         return any(n.startswith("tpl:") and "VMware Guest" in n for n in r["_notes"])
+
+    def _norm_name(s: str, suffix: str) -> str:
+        t = (s or "").strip().lower()
+        return t[:-len(suffix)] if t.endswith(suffix.lower()) else t
 
     vm_guest_by_key = {}
     for r in by_cls["VirtualMachine"]:
@@ -450,6 +456,7 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
             keys.add(r["managementip"])
         if r["name"]:
             keys.add(r["name"].lower())
+            keys.add(_norm_name(r["name"], "-vm"))
         for k in keys:
             vm_guest_by_key.setdefault(k, r)
     kept_vms, touch_vms = [], []
@@ -461,7 +468,8 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         if r.get("managementip"):
             tgt = vm_guest_by_key.get(r["managementip"])
         if tgt is None and r.get("_tech"):
-            tgt = vm_guest_by_key.get(r["_tech"].lower())
+            tgt = vm_guest_by_key.get(r["_tech"].lower()) \
+                or vm_guest_by_key.get(_norm_name(r["_tech"], "-os"))
         if tgt is None or tgt is r:
             kept_vms.append(r)
             continue
