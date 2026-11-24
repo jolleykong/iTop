@@ -21,8 +21,10 @@ Zabbix (10.240.22.34, API 只读)                      iTop (itop-web:8081)
   3. Cisco/ASA/F5/Brocade/Generic SNMP → NetworkDevice
   4. XSKY/OceanStor/Unity/深信服/Storage → StorageSystem
   5. BMC/iDRAC/iLO/IMM/PowerEdge/ProLiant/Supermicro → Server（物理硬件视角）
-     - 命名 `svr-iLo-{带外IP}-{OS名}` 的 BMC host 解析出 OS 名，若与本轮 Server 行同名
-       则合并（serial/model 充实目标行），不单独建 CI
+     - 命名 `svr-MGMT-{带外IP}-{OS名}`（v3.12 起的硬件管理地址规范；旧前缀
+       `svr-{ilo|idrac|bmc|imm}-` 兼容）的 BMC host 解析出 OS 名，若与本轮 Server
+       行同名则合并（serial/model 充实目标行），不单独建 CI；无模板时命名本身
+       即证据（naming:bmc），按物理机 Server 建模，不再暂挂
   6. ESXi/Hypervisor → Server（宿主机）
   7. 无模板证据（agent-only/裸 host）→ Server + description `phys:unverified`
      （等 Zabbix 侧补 systemd-detect-virt / inventory.type 证据后自动迁移）
@@ -73,7 +75,7 @@ SYNC_INTERVAL_SECONDS=14400
    与 BMC host 序列号对账，形成不依赖命名的硬关联
 2. OS agent 主机加 `systemd-detect-virt` 自定义 item → inventory.type（KVM/physical/...），
    消除 461 台 phys:unverified
-3. BMC host 打 tag `os_host=<OS主机名>`（命名规范已有：svr-iLo-IP-OS名，146/148 符合）
+3. BMC host 打 tag `os_host=<OS主机名>`（命名规范已有：svr-MGMT-IP-OS名，146/148 符合）
 4. Oracle DB host 的 OS 侧补建 agent host（当前 96 台实例无独立 OS 监控）
 5. vCenter discovery 补宿主信息（tag/hypervisor 名称），消除 VM 占位桶
 

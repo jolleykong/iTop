@@ -10,7 +10,8 @@ v2 分类规则（按优先级，模板名为硬证据）：
   3. Cisco/F5/Brocade/ASA 等 SNMP    -> NetworkDevice
   4. XSKY/OceanStor/Unity/深信服     -> StorageSystem
   5. BMC/iDRAC/iLO/IMM/PowerEdge/ProLiant/Supermicro/Hypervisor/ESXi -> Server（物理机/宿主）
-     - svr-{ilo|idrac|bmc|imm}-IP-OS名 命名的 BMC host：解析出 OS 名，若本轮存在同名
+     - svr-MGMT-{IP}-OS名 命名的 BMC host（旧规范 svr-{ilo|idrac|bmc|imm}-IP-OS名
+       兼容）：解析出 OS 名，若本轮存在同名
        Server CI 行则合并（serial/model 充实目标行），BMC host 不单独建 CI；
        关联失败则自行建 Server
   6. 无任何模板证据（agent-only/裸 host）-> Server + description "phys:unverified"
@@ -58,8 +59,11 @@ DB_HOST_PLACEHOLDER = os.environ.get("DB_HOST_PLACEHOLDER", "ZBX-DB-Host-Unassig
 
 # 名称兜底规则（仅无模板证据的 host）
 RE_STORAGE = re.compile(r"存储|storage|NAS\b|SAN\b", re.I)
-# BMC host 命名钥匙：svr-iLo-{带外IP}-{OS主机名}（146/148 硬件 host 符合）
-RE_BMC_NAME = re.compile(r"^svr-(ilo|idrac|bmc|imm)-(\d+(?:\.\d+){3})-(.+)$", re.I)
+# BMC host 命名钥匙（v3.12 起新规范）：svr-MGMT-{带外IP}-{OS主机名} =
+# 服务器硬件管理地址（覆盖 iLo/iDRAC/IMM/Inspur BMC 等全部带外口）。
+# 兼容旧前缀 svr-{ilo|idrac|bmc|imm}-（切换期两套并存，Zabbix 侧已批量更名）
+RE_BMC_NAME = re.compile(
+    r"^svr-(mgmt|ilo|idrac|bmc|imm)-(\d+(?:\.\d+){3})-(.+)$", re.I)
 
 # 模板名 → 类别（按序匹配，先命中先定类）
 TPL_PATTERNS = [
@@ -352,9 +356,13 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
             stats["counts"]["DBServer_by_tag"] = stats["counts"].get("DBServer_by_tag", 0) + 1
             notes = []  # OS 层不带 DB 标注，避免 description 重复
         if cls is None:
-            # 无模板证据：v3 双来源判定（inv hw.virt 优先，tag virt 手工兜底），
-            # 两来源均无 → 保守 Server 暂挂（phys:unverified）
-            if RE_STORAGE.search(name):
+            # 无模板证据：v3.12 命名规范补充证据 —— svr-MGMT-{IP}-{OS名}
+            # （兼容旧 svr-{ilo|idrac|bmc|imm}- 前缀）= 服务器硬件管理地址，
+            # 按物理机 Server 建模（不再保守暂挂 phys:unverified）
+            if RE_BMC_NAME.match(name):
+                cls = "Server"
+                notes.append("naming:bmc")
+            elif RE_STORAGE.search(name):
                 cls = "StorageSystem"
             else:
                 verdict, vsrc = virt_evidence(h, tg)
@@ -388,10 +396,12 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         if cls == "Server" and "phys:unverified" in notes and row.get("managementip"):
             osagent_by_ip.setdefault(row["managementip"], []).append(row)
 
-    # BMC host 关联合并：svr-iLo-IP-OS名 -> 同名 Server 行（OS host 视角）
+    # BMC host 关联合并：svr-MGMT-IP-OS名 -> 同名 Server 行（OS host 视角）。
+    # BMC 证据两来源：模板（tpl:*.BMC/iDRAC/...）或命名规范（naming:bmc）
     def is_bmc_row(r):
-        return any(RE_BMC_NAME.match(r["name"]) and n.startswith("tpl:") and
-                   re.search(r"BMC|iDRAC|iLO|IMM|PowerEdge|ProLiant|Supermicro", n, re.I)
+        return any(RE_BMC_NAME.match(r["name"]) and
+                   (n.startswith("tpl:") or n.startswith("naming:")) and
+                   re.search(r"BMC|iDRAC|iLO|IMM|PowerEdge|ProLiant|Supermicro|bmc", n, re.I)
                    for n in r["_notes"])
 
     keep_servers, bmc_rows = [], []
