@@ -88,6 +88,9 @@ $aDsDefs = [
         'name' => 'zbx-dbservers',
         'scope_class' => 'DBServer',
         'desc' => 'Zabbix host sync -> DBServer (Oracle/MySQL by ODBC, linked to host via {$ORACLE.HOST})',
+        // DBServer.status 枚举是定制的 active/inactive（无 obsolete）：
+        // 淘汰值必须是 inactive，否则引擎 Job1 每轮都撞枚举行级报错、旧对象永不淘汰
+        'delete_policy_update' => 'status:inactive',
         'attrs' => [
             ['attcode' => 'name', 'reconcile' => true, 'update' => true],
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
@@ -211,8 +214,11 @@ foreach ($aDsDefs as $aDef) {
     $oDS->Set('scope_restriction', '');
     $oDS->Set('delete_policy', $aDef['delete_policy'] ?? 'update');
     if (($aDef['delete_policy'] ?? 'update') === 'update') {
-        // 字典类（Brand/Model）无 status 字段，不能走 status:obsolete，用 ignore
-        $oDS->Set('delete_policy_update', 'status:obsolete');
+        // 淘汰值按目标类枚举定制：
+        // - DBServer 的 status 枚举是 active/inactive（无 obsolete），写 obsolete 会撞枚举报错
+        //   → 其余类（Server/VM/Hypervisor/NetworkDevice/StorageSystem）用标准 status:obsolete
+        // - 字典类（Brand/Model）无 status 字段，不能走 status:obsolete，用 ignore
+        $oDS->Set('delete_policy_update', $aDef['delete_policy_update'] ?? 'status:obsolete');
     }
     $oDS->Set('full_load_periodicity', 0);
     // 不传 attribute_list：iTop 会自动为 scope_class 全属性生成默认映射行，
@@ -235,6 +241,23 @@ foreach ($aDsDefs as $aDef) {
         $oDS->Set('full_load_periodicity', $iLoadPeriodicity);
         $oDS->DBUpdate();
         echo "[provision-ds] DS '{$aDef['name']}' full_load_periodicity -> {$iLoadPeriodicity}\n";
+    }
+}
+
+// 2.6 delete_policy_update 幂等归一化：已有 DS 的淘汰值必须与目标类枚举匹配。
+//     DBServer 定制枚举 active/inactive（无 obsolete）——若 DS 仍是 status:obsolete，
+//     引擎 Job1 每轮淘汰都会撞枚举行级报错，disappeared 对象永远残留。
+$sWantedPolicyUpdate = 'status:obsolete';
+foreach ($aDsDefs as $aDef) {
+    $oDS = findByOQL("SELECT SynchroDataSource WHERE name='" . $aDef['name'] . "'");
+    if ($oDS === null || ($aDef['delete_policy'] ?? 'update') !== 'update') {
+        continue;
+    }
+    $sWanted = $aDef['delete_policy_update'] ?? $sWantedPolicyUpdate;
+    if ($oDS->Get('delete_policy_update') !== $sWanted) {
+        $oDS->Set('delete_policy_update', $sWanted);
+        $oDS->DBUpdate();
+        echo "[provision-ds] DS '{$aDef['name']}' delete_policy_update -> {$sWanted}\n";
     }
 }
 
@@ -261,7 +284,7 @@ foreach ($aDsDefs as $aDef) {
         $oDS->Set('scope_restriction', '');
         $oDS->Set('delete_policy', $aDef['delete_policy'] ?? 'update');
         if (($aDef['delete_policy'] ?? 'update') === 'update') {
-            $oDS->Set('delete_policy_update', 'status:obsolete');
+            $oDS->Set('delete_policy_update', $aDef['delete_policy_update'] ?? 'status:obsolete');
         }
         $oDS->Set('full_load_periodicity', $iLoadPeriodicity);
         $iDsId = $oDS->DBInsert();
