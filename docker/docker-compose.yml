@@ -7,10 +7,11 @@ services:
     container_name: itop-db
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: "ItopDb#2026"
+      # 口令统一来自 docker/.env（不入库）；缺失时 compose 直接报错，避免默认弱口令
+      MARIADB_ROOT_PASSWORD: "${ITOP_DB_ROOT_PASSWORD:?请在 docker/.env 配置 ITOP_DB_ROOT_PASSWORD}"
       MARIADB_DATABASE: itop
       MARIADB_USER: itop
-      MARIADB_PASSWORD: "ItopDb#2026"
+      MARIADB_PASSWORD: "${ITOP_DB_PASS:?请在 docker/.env 配置 ITOP_DB_PASS}"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -25,7 +26,7 @@ services:
       retries: 12
 
   web:
-    image: itop-web:3.3.0-1
+    image: itop-web:kkv-3.1.0
     container_name: itop-web
     restart: unless-stopped
     depends_on:
@@ -43,7 +44,7 @@ services:
   # 一次性供给：iTop 原生 MetaModel API 建 Organization + 3 个 Synchro Data Source
   # （幂等，存在即跳过；重跑：docker compose up provision）
   provision:
-    image: itop-web:3.3.0-1
+    image: itop-web:kkv-3.1.0
     container_name: itop-provision
     restart: "no"
     depends_on:
@@ -69,7 +70,7 @@ services:
   sync:
     build:
       context: ./cmdb-sync
-    image: itop-sync:1.0
+    image: itop-sync:kkv-3.1.0
     container_name: itop-sync
     restart: unless-stopped
     depends_on:
@@ -87,7 +88,7 @@ services:
       ITOP_DB_HOST: itop-db
       ITOP_DB_NAME: itop
       ITOP_DB_USER: itop
-      ITOP_DB_PASS: "ItopDb#2026"
+      ITOP_DB_PASS: "${ITOP_DB_PASS:?请在 docker/.env 配置 ITOP_DB_PASS}"
 
 volumes:
   itop-db-data:

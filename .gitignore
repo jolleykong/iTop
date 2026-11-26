@@ -167,3 +167,13 @@ local.properties
 Thumbs.db
 
 __pycache__/
+
+# ── 本项目栈的环境变量与凭据（禁止入库）──
+/docker/.env
+.env
+*.pass
+*.token
+vc_sn_map.json.local
+
+# 一次性备份/快照（含环境标识，不入库）
+/docker/cmdb-sync/*-backup.json

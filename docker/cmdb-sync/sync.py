@@ -20,6 +20,9 @@ v2 分类规则（按优先级，模板名为硬证据）：
 幂等：对账键=name，重复推送只产生增量更新；未在载荷中的旧设备由
 数据源 user_delete_policy=update 标记 obsolete。
 凭据来自环境变量（/opt/itop/.env 经 compose 注入）。
+代码内不保留任何口令默认值：ITOP_DB_PASS 缺失即退出（见下方安全基线检查）。
+
+发布版本：kkv-3.1.0（sync 逻辑版本 v3.19）
 """
 import json
 import os
@@ -39,8 +42,14 @@ ITOP_PWD = os.environ.get("ITOP_ADMIN_PWD", "")
 ITOP_DB_HOST = os.environ.get("ITOP_DB_HOST", "itop-db")
 ITOP_DB_NAME = os.environ.get("ITOP_DB_NAME", "itop")
 ITOP_DB_USER = os.environ.get("ITOP_DB_USER", "itop")
-ITOP_DB_PASS = os.environ.get("ITOP_DB_PASS", "ItopDb#2026")
+ITOP_DB_PASS = os.environ.get("ITOP_DB_PASS", "").strip()
 ORG_NAME = os.environ.get("CMDB_ORG", "ITOPS")
+
+# 安全基线：数据库口令只允许来自环境变量（/opt/itop/.env），代码中不留默认值。
+# 缺失时直接退出，避免带着空口令跑一轮“看似成功”的同步。
+if not ITOP_DB_PASS:
+    sys.stderr.write("[FATAL] ITOP_DB_PASS 未配置：请在 /opt/itop/.env 设置后重启容器\n")
+    sys.exit(2)
 # 暂存区位置（引擎不管理 location：staged 该字段恒空 + 空值不覆盖规则，
 # 故位置标记由每轮引擎外对账维护，跟随 phys:unverified 判定自动进出）
 STAGING_LOCATION_NAME = os.environ.get("STAGING_LOCATION_NAME", "ZBX待分类暂存区")
@@ -854,15 +863,19 @@ def push(ds_name: str, rows: list, cols: list) -> bool:
 
 
 def itop_db_sql(sql: str) -> bool:
-    """mysql CLI 直连 iTop 库执行 SQL（引擎外对账用，如暂存区位置）"""
+    """mysql CLI 直连 iTop 库执行 SQL（引擎外对账用，如暂存区位置）
+
+    密码通过 MYSQL_PWD 环境变量传递，不进入 argv（ps 不可见）。"""
+    if not ITOP_DB_PASS:
+        log("itop-db sql SKIPPED: ITOP_DB_PASS 未配置")
+        return False
     try:
+        env = dict(os.environ, MYSQL_PWD=ITOP_DB_PASS)
         r = subprocess.run(
-            ["mysql", "-h", os.environ.get("ITOP_DB_HOST", "itop-db"),
-             "-u", os.environ.get("ITOP_DB_USER", "itop"),
-             f"-p{os.environ.get('ITOP_DB_PASS', '')}",
+            ["mysql", "-h", ITOP_DB_HOST, "-u", ITOP_DB_USER,
              "--default-character-set=utf8mb4",
-             os.environ.get("ITOP_DB_NAME", "itop"), "-N", "-e", sql],
-            capture_output=True, text=True, timeout=60)
+             ITOP_DB_NAME, "-N", "-e", sql],
+            capture_output=True, text=True, timeout=60, env=env)
         if r.returncode != 0:
             log(f"itop-db sql FAILED: {(r.stderr or '').strip()[:200]}")
             return False

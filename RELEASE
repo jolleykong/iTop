@@ -1,0 +1,12 @@
+# 发布版本记录（与 git tag kkv-<version> 一一对应）
+
+kkv-3.1.0  2026-11-26
+  - 模块裁剪：iTop 只保留 CMDB 能力，45 -> 29 个模块（移除工单/请求/变更/问题/
+    已知错误/FAQ/服务管理/自助门户/终端用户设备/iTop Hub 及 5 个 bridge 桥接扩展），
+    经 REST 与后台菜单双验证：UserRequest / Service / Ticket 类已不存在
+  - 裁剪方法固化：docker/tools/mkcrop.php + docker/tools/README.md
+    （关键结论：setup 向导选项不驱动卸载，须以 selected_modules 参数文件跑无人值守 upgrade）
+  - sync.py v3.19：宿主 SN 四级兜底（BMC FRU 自动挂接）
+  - 安全基线：数据库口令全部改为环境变量注入，移除代码内默认口令；
+    sync.py 缺 ITOP_DB_PASS 直接退出；mysql 改用 MYSQL_PWD 避免 argv 泄露
+  - 新增 docker/.env.example，.env 与备份文件不入库

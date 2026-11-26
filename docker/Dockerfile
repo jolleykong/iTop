@@ -1,6 +1,6 @@
-# iTop 3.3.0-1 生产镜像（jolleykong/iTop tag:3.3.0-1）
+# iTop 生产镜像（基础源码 jolleykong/iTop tag:3.3.0-1；平台镜像 tag 见 RELEASE）
 # 构建上下文 = 仓库根目录：
-#   docker build -f docker/Dockerfile -t itop-web:3.3.0-1 .
+#   docker build -f docker/Dockerfile -t itop-web:kkv-3.1.0 .
 FROM php:8.2-apache-bookworm
 
 # 与 itops-backend 同底座（Debian 12 bookworm），APT mirror 惯例对齐（空串=官方源）
