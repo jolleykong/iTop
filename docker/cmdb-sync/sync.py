@@ -343,20 +343,30 @@ def build_oracle_map(hosts: list) -> dict:
 
 
 def load_ext_hv_sn(path: str = None) -> dict:
-    """v3.17: 外源宿主 SN 表（vc_sn_pull.py 直读 vCenter otherIdentifyingInfo 产出）。
+    """v3.18: 外源宿主 SN 表（vc_sn_pull.py 直读 vCenter otherIdentifyingInfo 产出，
+    6.5 老主机缺失的条目由 BMC FRU 证据补齐）。
 
-    文件格式: {宿主管理IP: SN}；键命中 Hypervisor 行 managementip。
-    SN 优先级: vcenter-item > vc-api(外源表) > uuid-decode。
-    文件缺失/坏格式时静默返回空表（不阻塞同步）。"""
+    文件格式: {宿主管理IP: SN} 或 {宿主管理IP: {"sn": "...", "src": "bmc-fru"}}
+    （对象形式用于标注非 vCenter 来源，证据前缀随之变化；字符串形式默认 src=vc-api）
+    键命中 Hypervisor 行 managementip。
+    SN 优先级: vcenter-item > 外源表(vc-api/bmc-fru) > uuid-decode。
+    返回 {ip: (sn, src)}。文件缺失/坏格式时静默返回空表（不阻塞同步）。"""
     p = path or os.environ.get("VC_SN_MAP", "/app/vc_sn_map.json")
     try:
         with open(p) as f:
             raw = json.load(f)
-        return {str(k).strip(): str(v).strip() for k, v in raw.items() if str(v).strip()}
-    except FileNotFoundError:
-        return {}
     except Exception:
         return {}
+    out = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            sn = str(v.get("sn") or "").strip()
+            src = str(v.get("src") or "vc-api").strip()
+        else:
+            sn, src = str(v).strip(), "vc-api"
+        if sn:
+            out[str(k).strip()] = (sn, src)
+    return out
 
 
 def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None, ext_hv_sn: dict = None) -> tuple:
@@ -616,13 +626,49 @@ def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None, ext_hv_s
         for r in by_cls["Hypervisor"]:
             r["description"] = clean("zbx: " + "; ".join(n for n in r["_notes"] if n))
 
-    # v3.15/v3.17: 宿主挂物理机 —— Hypervisor.server_id 按 SN 解析到 Server 行
-    # （svr-MGMT-{IP}-{OS名} 带外口 CI，inventory.serialno_a）。SN 来源优先级：
+    # v3.15/v3.17/v3.18/v3.19: 宿主挂物理机 —— Hypervisor.server_id 按 SN 解析到
+    # Server 行（svr-MGMT-{IP}-{OS名} 带外口 CI，inventory.serialno_a）。SN 来源
+    # 优先级（逐级兜底，命中即止）：
     # a) vmware.hv.hw.serialnumber item（vCenter SDK，实测仅部分 Dell 机型返回）
-    # b) 外源表 vc_sn_map.json（vc_sn_pull.py 直读 vCenter otherIdentifyingInfo，
-    #    键=宿主管理 IP；v3.17，实测覆盖 28/36）
-    # c) UUID 全 ASCII 解码（HPE 机型，见 decode_uuid_sn）
+    # b) 外源表 vc_sn_map.json（键=宿主管理 IP）：
+    #    - 字符串值 = vc_sn_pull.py 直读 vCenter otherIdentifyingInfo（v3.17）
+    #    - 对象值 {"sn","src"} = 标注来源，如 bmc-fru（v3.18 历史遗留手工补齐）
+    # c) UUID 全 ASCII 解码（HPE/部分 Lenovo 机型，见 decode_uuid_sn）
+    # d) v3.19 BMC 自动兜底 —— 不依赖 vCenter/手工表：
+    #    Zabbix 的带外 BMC 主机（svr-MGMT-*）本身就在全自动采集 FRU SN，
+    #    按机房带外网段规律定位宿主：{前两段相同, 末段相同, 第三段不同}
+    #    （实测 10.240.48.N ↔ 10.240.0.N，30/30 配对且 SN 与 vCenter 完全一致）。
+    #    仅在 a/b/c 全缺失时启用；同末段多候选则不猜（跳过并记日志）。
     # SN 证据同时记入 description（Hypervisor 类无 serialnumber 字段）。
+    # ---- v3.19: 构建 带外IP -> BMC SN 表（BMC 行已合并进 Server 行）----
+    bmc_ip_sn = {}
+    for r in by_cls["Server"]:
+        sn0 = (r.get("serialnumber") or "").strip()
+        if not sn0:
+            continue
+        for n in r["_notes"]:
+            mb = re.match(r"bmc:[a-z]+:(\d+(?:\.\d+){3})", n or "")
+            if mb:
+                bmc_ip_sn.setdefault(mb.group(1), sn0)
+        m2 = RE_BMC_NAME.match(r["name"])
+        if m2:
+            bmc_ip_sn.setdefault(m2.group(2), sn0)
+
+    def bmc_auto_sn(hv_ip: str):
+        """按带外网段规律从 BMC 表取 SN。返回 (sn, 候选数)。唯一命中才返回。"""
+        o = hv_ip.split(".") if hv_ip.count(".") == 3 else []
+        if len(o) != 4:
+            return "", 0
+        cands = []
+        for ip, s in bmc_ip_sn.items():
+            p = ip.split(".")
+            if (len(p) == 4 and p[0] == o[0] and p[1] == o[1]
+                    and p[3] == o[3] and p[2] != o[2] and s):
+                cands.append((ip, s))
+        if len(cands) == 1:
+            return cands[0][1], 1
+        return "", len(cands)
+
     server_sn = {}
     for r in by_cls["Server"]:
         sn0 = (r.get("serialnumber") or "").strip().upper()
@@ -634,11 +680,24 @@ def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None, ext_hv_s
         sn = ((hv_sn or {}).get(tech) or "").strip()
         note = "sn:vcenter-item" if sn else ""
         if not sn:
-            sn = ((ext_hv_sn or {}).get(r.get("managementip") or "") or "").strip()
-            note = "sn:vc-api" if sn else ""
+            ext = (ext_hv_sn or {}).get(r.get("managementip") or "")
+            if ext:
+                sn, src = ext if isinstance(ext, tuple) else (str(ext), "vc-api")
+                note = "sn:" + (src or "vc-api")
+            else:
+                sn, note = "", ""
         if not sn:
             sn = decode_uuid_sn(tech)
             note = "sn:uuid-decode" if sn else ""
+        if not sn:
+            # v3.19: BMC FRU 自动兜底（Zabbix 自动采集的带外 SN）
+            hvip = r.get("managementip") or ""
+            sn, ncand = bmc_auto_sn(hvip)
+            if sn:
+                note = "sn:bmc-auto"
+            elif ncand > 1:
+                stats.setdefault("hv_bmc_ambiguous", []).append(
+                    f"{r['name']} ({ncand} 个同末段候选，跳过)")
         if not sn:
             continue
         r["_notes"].append(note + ":" + sn)
@@ -905,6 +964,40 @@ def enrich_bmc_fru(hosts: list) -> int:
     return n
 
 
+def enrich_bmc_item_sn(hosts: list) -> int:
+    """v3.19: BMC 主机 SN 优先取 item 现值（system.hw.serialnumber）。
+
+    背景：带外 BMC 主机的 inventory_mode 多为 manual（1），资产里的 serialno_a
+    不会随采集自动刷新——今天就对、换机后就变成死数据。而 item 是活跃数据源：
+    换机或 FRU 变更后下一轮采集即反映。故此处以 item 值覆盖 inventory（item 空
+    则保留原值，避免把已校验的资产清空）。"""
+    bmc = [h for h in hosts
+           if RE_BMC_NAME.match(clean(h.get("name") or h.get("host")))]
+    if not bmc:
+        return 0
+    items = zbx_rpc("item.get", {
+        "output": ["hostid", "lastvalue"],
+        "hostids": [h["hostid"] for h in bmc],
+        "filter": {"key_": "system.hw.serialnumber"},
+    })
+    got = {}
+    for it in items:
+        v = clean(it.get("lastvalue"))
+        if v and v not in ("0", "0.0", "None", "To Be Filled By O.E.M."):
+            got[it["hostid"]] = v
+    n = 0
+    for h in bmc:
+        v = got.get(h["hostid"])
+        if not v:
+            continue
+        inv = h.get("inventory") or {}
+        if (inv.get("serialno_a") or "").strip() != v:
+            inv["serialno_a"] = v
+            h["inventory"] = inv
+            n += 1
+    return n
+
+
 def run_once() -> bool:
     hosts = zbx_rpc("host.get", {
         "output": ["host", "name", "status"],
@@ -919,6 +1012,10 @@ def run_once() -> bool:
     n_fru = enrich_bmc_fru(hosts)
     if n_fru:
         log(f"BMC FRU 补充: {n_fru} 台 serial/model/vendor 从 Inspur FRU LLD item 回填")
+
+    n_item_sn = enrich_bmc_item_sn(hosts)
+    if n_item_sn:
+        log(f"BMC item SN 刷新: {n_item_sn} 台 serialno_a 以 system.hw.serialnumber 现值覆盖")
 
     oracle_map = build_oracle_map(hosts)
     log(f"oracle hosts resolved via {{$ORACLE.HOST}}/ip: {len(oracle_map)}")
@@ -964,6 +1061,8 @@ def run_once() -> bool:
     if stats.get("hv_server_linked"):
         log(f"宿主按 SN 挂物理机 {len(stats['hv_server_linked'])} 台: "
             + ", ".join(stats["hv_server_linked"]))
+    if stats.get("hv_bmc_ambiguous"):
+        log("宿主 BMC 兜底存在歧义(已跳过): " + ", ".join(stats["hv_bmc_ambiguous"]))
 
     if ITOP_PWD in PLACEHOLDERS:
         log("SKIPPED push: ITOP_ADMIN_PWD not set — fill /opt/itop/.env and 'docker compose restart sync'")

@@ -81,6 +81,59 @@ active agent 按技术名匹配）与 VM 层 vCenter LLD guest host。命名规�
   （errors=10 案例：finedb/FAQDB 等 8 名 10 行）。v3.10 已 obsolete 的
   Server 残留对象需手工清理（REST core/delete），清理后自愈
 
+## 宿主 → 物理机挂接（v3.19 定稿）
+
+Hypervisor 类无 `serialnumber` 字段，宿主用 SN 解析到 `Server` 行（带外口 CI
+`svr-MGMT-{带外IP}-{OS名}`），SN 证据写入 `description` 便于审计。SN 来源
+**四级兜底，命中即止**：
+
+| 级 | 来源 | 证据标记 | 覆盖面 |
+|---|---|---|---|
+| a | `vmware.hv.hw.serialnumber` item（vCenter SDK） | `sn:vcenter-item` | 少量 Dell |
+| b | `vc_sn_map.json`（`vc_sn_pull.py` 直读 vCenter otherIdentifyingInfo） | `sn:vc-api` | 28/36 |
+| c | SMBIOS UUID 全 ASCII 解码（HPE/Lenovo 部分机型） | `sn:uuid-decode` | 少量 |
+| d | **BMC FRU 自动兜底**（Zabbix 已采，见下） | `sn:bmc-auto` | 6/36 |
+
+### d) BMC 自动兜底原理（v3.19）
+
+带外 BMC 主机 `svr-MGMT-*` 本身就在全自动采集 FRU SN，无需 vCenter 参与。
+定位规则：`{前两段相同, 末段相同, 第三段不同}`，即机房带外网段与业务网段的
+末位一一对应（实测 `10.240.48.N` ↔ `10.240.0.N`）。
+
+验证依据（2026-11-26 实测）：
+
+- 已挂接的 30 台宿主，BMC `inventory.serialno_a` 与 vCenter SN **30/30 完全一致**
+- 反向验证：把 `vc_sn_map.json` 里 6 台 ESXi 6.5 Lenovo 的手工条目删除后重跑，
+  sync 自动以 `sn:bmc-auto` 挂回，SN 全部正确（J32MEVT/VR/VL/VP/VM/VN）
+
+安全约束：
+
+- 仅在 a/b/c 全缺失时启用，不覆盖已有更硬证据
+- 同末段命中多个候选 → **跳过并写日志**（`宿主 BMC 兜底存在歧义`），不猜
+- `enrich_bmc_item_sn`：BMC 主机 SN 优先取 `system.hw.serialnumber` item 现值
+  覆盖 `inventory.serialno_a`。原因：BMC 主机 `inventory_mode` 多为 manual，
+  资产值不会随采集刷新，换机后会变死数据；item 是活跃数据源
+
+### ESXi 6.5 老主机为何拿不到 SN
+
+`otherIdentifyingInfo` 在 ESXi 6.5 主机上稳定返回**空数组**（非字段缺失、非
+报错），同批 6.7 主机全部正常 —— 这是 vCenter 侧限制，不是取法问题（
+`vc_sn_pull.py` 已用子路径单取 `hardware.systemInfo.otherIdentifyingInfo`）。
+这 6 台 Lenovo x3650 M5 只有 443 端口开放（SSH/CIM/SNMP 全关），vCenter 是唯一
+现成 API 通道，因此启用 d) 兜底。同批 UUID 也非 ASCII（`77829ff0-...`），c) 级无效。
+
+### vc_sn_map.json 的正确用法
+
+由 `vc_sn_pull.py` **自动产出**，不要手工编辑：
+
+```bash
+python3 vc_sn_pull.py <vc_host> info_reader@vsphere.local @/root/kk/.vc_pass /tmp/vc_hosts.json
+```
+
+外源 map 的定位是"补 vCenter 的盲区"，不是人工维护台账。若某台需临时补录，
+写成 `{"sn": "...", "src": "bmc-fru"}` 标注来源（v3.18 兼容格式），并在
+下一次 `vc_sn_pull` 产出后复核。
+
 ## 人工核对入口（iTop UI）
 
 - 数据同步：管理工具 → 数据同步（每轮执行报告）
@@ -94,6 +147,8 @@ active agent 按技术名匹配）与 VM 层 vCenter LLD guest host。命名规�
 
 1. OS agent 主机补采 `system.hw.serialnumber`（需 sudo）→ inventory.serialno_a，
    与 BMC host 序列号对账，形成不依赖命名的硬关联
+   - 已完成（2026-11-26）：36 台 ESXi-SVR LLD 宿主 `inventory_mode` 由 disabled
+     改 manual（host prototype 层下发），回填 `serialno_a` 34 台；余 2 台为托管平台
 2. OS agent 主机加 `systemd-detect-virt` 自定义 item → inventory.type（KVM/physical/...），
    消除 461 台 phys:unverified
 3. BMC host 打 tag `os_host=<OS主机名>`（命名规范已有：svr-MGMT-IP-OS名，146/148 符合）
