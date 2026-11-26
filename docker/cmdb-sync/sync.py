@@ -73,17 +73,44 @@ RE_BMC_NAME = re.compile(
 RE_TEMPLATE_GUEST = re.compile(r"模板|template|tmpl|\.vmtx", re.I)
 
 
+def _uuid_field_swap(hexstr: str) -> str:
+    """SMBIOS GUID 前 3 个字段按 16/32bit 小端存储：hex pair 保内容、倒顺序。
+    （4c4c4544 类二进制 UUID 不适用；仅全 ASCII UUID 解码路径使用）"""
+    pairs = [hexstr[i:i + 2] for i in range(0, len(hexstr), 2)]
+    return "".join(reversed(pairs))
+
+
 def decode_uuid_sn(uuid: str) -> str:
-    """宿主 SMBIOS UUID 全 ASCII 时直接解码为 SN（华为/浪潮机型特征，
-    如 37383638-3330-4e43-... -> "786830NC79420FSM"）。Dell 4c4c4544-*
-    为二进制编码不可解码，SN 走 vmware.hv.hw.serialnumber item。"""
+    """宿主 SMBIOS UUID 全 ASCII 时解码为 SN。
+
+    v3.16 修正字节序：vCenter 返回的 UUID 前 3 个字段是小端存储的，
+    直接 hex->ascii 会得到错序串（HPE 实证：30393137-3436-4336-5537-...
+    raw 解出 "091746C6U750N5A8"，规范序后取尾 10 位 = "6CU750N5A8"，
+    与机身标签/HPE SN 格式一致）。raw 解码即 8-12 位 SN 时（部分机型
+    直接把 SN 写入 UUID）优先 raw。Dell 4c4c4544-* 为二进制不可解码，
+    SN 走 vmware.hv.hw.serialnumber item。"""
     try:
-        s = bytes.fromhex(uuid.replace("-", "")).decode("ascii")
-        if re.match(r"^[A-Za-z0-9\-]{10,32}$", s):
-            return s
+        h = bytes.fromhex(uuid.replace("-", ""))
+        s = h.decode("ascii")
     except Exception:
-        pass
-    return ""
+        return ""
+    if not re.match(r"^[A-Za-z0-9\-]{8,32}$", s):
+        return ""
+    if re.match(r"^[A-Za-z0-9\-]{8,12}$", s):
+        return s
+    parts = uuid.split("-")
+    if len(parts) == 5:
+        try:
+            canon = bytes.fromhex(
+                _uuid_field_swap(parts[0]) + _uuid_field_swap(parts[1])
+                + _uuid_field_swap(parts[2]) + parts[3] + parts[4]
+            ).decode("ascii")
+        except Exception:
+            canon = ""
+        tail = canon[-10:] if canon else ""
+        if re.match(r"^[A-Za-z0-9]{10}$", tail):
+            return tail
+    return s
 
 # 模板名 → 类别（按序匹配，先命中先定类）
 TPL_PATTERNS = [
