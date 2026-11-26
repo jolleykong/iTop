@@ -82,6 +82,8 @@ $aDsDefs = [
             ['attcode' => 'org_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
             ['attcode' => 'status', 'reconcile' => false, 'update' => true],
             ['attcode' => 'description', 'reconcile' => false, 'update' => true],
+            // v3.15: 宿主按 SN 挂物理机（svr-MGMT-* Server CI，按 name 解析）
+            ['attcode' => 'server_id', 'reconcile' => false, 'update' => true, 'extkey' => true],
         ],
     ],
     [

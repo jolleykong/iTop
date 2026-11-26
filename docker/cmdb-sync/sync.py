@@ -65,6 +65,26 @@ RE_STORAGE = re.compile(r"存储|storage|NAS\b|SAN\b", re.I)
 RE_BMC_NAME = re.compile(
     r"^svr-(mgmt|ilo|idrac|bmc|imm)-(\d+(?:\.\d+){3})-(.+)$", re.I)
 
+# v3.15: vCenter 模板 VM 不入 CMDB（安全隔离：模板机名常带账号密码，如
+# "centos6.5模板（root/qweMNB@123）"，不宜广泛展示与搜集）。
+# Zabbix 官方 vmware.vm.discovery 宏集无 {#VM.TEMPLATE}（5.2/6.4/8.0 文档
+# 均确认），LLD 层无法过滤 → 只能在本层按名称跳过；已入库 CI 由引擎
+# obsolete 机制自动淘汰（staging 不再包含即失效）。
+RE_TEMPLATE_GUEST = re.compile(r"模板|template|tmpl|\.vmtx", re.I)
+
+
+def decode_uuid_sn(uuid: str) -> str:
+    """宿主 SMBIOS UUID 全 ASCII 时直接解码为 SN（华为/浪潮机型特征，
+    如 37383638-3330-4e43-... -> "786830NC79420FSM"）。Dell 4c4c4544-*
+    为二进制编码不可解码，SN 走 vmware.hv.hw.serialnumber item。"""
+    try:
+        s = bytes.fromhex(uuid.replace("-", "")).decode("ascii")
+        if re.match(r"^[A-Za-z0-9\-]{10,32}$", s):
+            return s
+    except Exception:
+        pass
+    return ""
+
 # 模板名 → 类别（按序匹配，先命中先定类）
 TPL_PATTERNS = [
     ("VirtualMachine", re.compile(r"^VMware Guest$", re.I), False),
@@ -295,7 +315,7 @@ def build_oracle_map(hosts: list) -> dict:
     return m
 
 
-def build_all(hosts: list, oracle_map: dict = None) -> tuple:
+def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None) -> tuple:
     """分类 + BMC 关联合并。返回 {cls: [rows]} 及统计。"""
     stats = {"merged_bmc": [], "unlinked_bmc": [], "merged_osagent": [],
              "merged_hv_snmp": [], "counts": {}}
@@ -343,6 +363,13 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         tg = {t.get("tag"): t.get("value") for t in h.get("tags") or []}
         cls, src, is_bmc = tpl_class(h)
         notes = [src] if src else []
+
+        # v3.15: vCenter 模板 VM 跳过 —— 不入 CMDB（安全隔离，见 RE_TEMPLATE_GUEST）
+        if cls == "VirtualMachine" and RE_TEMPLATE_GUEST.search(name):
+            stats["counts"]["VM_template_skipped"] = \
+                stats["counts"].get("VM_template_skipped", 0) + 1
+            stats.setdefault("skipped_template_guest", []).append(name)
+            continue
 
         if cls is None and has_db_tag(tg):
             # v3.7: tag type=Database 显式标注 —— 双产：
@@ -544,6 +571,36 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         by_cls["Hypervisor"] = [r for r in hv_rows if id(r) not in drop_hv]
         for r in by_cls["Hypervisor"]:
             r["description"] = clean("zbx: " + "; ".join(n for n in r["_notes"] if n))
+
+    # v3.15: 宿主挂物理机 —— Hypervisor.server_id 按 SN 解析到 Server 行
+    # （svr-MGMT-{IP}-{OS名} 带外口 CI，inventory.serialno_a）。SN 来源：
+    # a) vmware.hv.hw.serialnumber item（vCenter SDK 精确，实测仅 Dell 机型返回）
+    # b) UUID 全 ASCII 解码（华为/浪潮机型，见 decode_uuid_sn）
+    # SN 证据同时记入 description（Hypervisor 类无 serialnumber 字段）。
+    server_sn = {}
+    for r in by_cls["Server"]:
+        sn0 = (r.get("serialnumber") or "").strip().upper()
+        if sn0:
+            server_sn.setdefault(sn0, r["name"])
+    hv_server_linked = []
+    for r in by_cls["Hypervisor"]:
+        tech = r.get("_tech") or ""
+        sn = ((hv_sn or {}).get(tech) or "").strip()
+        note = "sn:vcenter-item" if sn else ""
+        if not sn:
+            sn = decode_uuid_sn(tech)
+            note = "sn:uuid-decode" if sn else ""
+        if not sn:
+            continue
+        r["_notes"].append(note + ":" + sn)
+        tgt = server_sn.get(sn.upper())
+        if tgt and tgt != r["name"]:
+            r["server_id"] = tgt
+            hv_server_linked.append(f"{r['name']} -> {tgt}")
+    if hv_server_linked:
+        for r in by_cls["Hypervisor"]:
+            r["description"] = clean("zbx: " + "; ".join(n for n in r["_notes"] if n))
+        stats["hv_server_linked"] = hv_server_linked
 
     by_cls["VirtualMachine"].sort(key=lambda r: r["name"])
     by_cls["Hypervisor"].sort(key=lambda r: r["name"])
@@ -817,7 +874,27 @@ def run_once() -> bool:
     oracle_map = build_oracle_map(hosts)
     log(f"oracle hosts resolved via {{$ORACLE.HOST}}/ip: {len(oracle_map)}")
 
-    by_cls, stats = build_all(hosts, oracle_map)
+    # v3.15: 宿主 SN —— vmware.hv.hw.serialnumber item 值（key 带 UUID 参数，
+    # 按宿主 hostid 关联取 tech 名）
+    hv_sn = {}
+    hostid_tech = {h["hostid"]: clean(h.get("host") or "") for h in hosts}
+    sn_items = zbx_rpc("item.get", {
+        "search": {"key_": "vmware.hv.hw.serialnumber"},
+        "output": ["hostid", "lastvalue", "state", "status"],
+        "limit": 500,
+    })
+    for it in sn_items:
+        v = (it.get("lastvalue") or "").strip()
+        tech = hostid_tech.get(it.get("hostid") or "")
+        if v and tech and it.get("status") == "0" and it.get("state") == "0":
+            hv_sn[tech] = v
+    log(f"hypervisor SN via vCenter item: {len(hv_sn)} 台")
+
+    by_cls, stats = build_all(hosts, oracle_map, hv_sn)
+    if stats.get("skipped_template_guest"):
+        log("vCenter 模板 VM 跳过(不入 CMDB) " +
+            str(stats["counts"].get("VM_template_skipped", 0)) + " 台: "
+            + ", ".join(stats["skipped_template_guest"][:10]))
     log("v2 分类统计: " + json.dumps(stats["counts"], ensure_ascii=False))
     log(f"BMC 关联合并 {len(stats['merged_bmc'])} 台: " +
         ", ".join(stats["merged_bmc"][:8]) + (" ..." if len(stats["merged_bmc"]) > 8 else ""))
@@ -832,6 +909,9 @@ def run_once() -> bool:
     if stats["merged_hv_snmp"]:
         log(f"ESXi SNMP 宿主并入 UUID 宿主 {len(stats['merged_hv_snmp'])} 台: "
             + ", ".join(stats["merged_hv_snmp"]))
+    if stats.get("hv_server_linked"):
+        log(f"宿主按 SN 挂物理机 {len(stats['hv_server_linked'])} 台: "
+            + ", ".join(stats["hv_server_linked"]))
 
     if ITOP_PWD in PLACEHOLDERS:
         log("SKIPPED push: ITOP_ADMIN_PWD not set — fill /opt/itop/.env and 'docker compose restart sync'")
@@ -852,7 +932,7 @@ def run_once() -> bool:
     ok &= push("zbx-models", model_rows, ["name", "type", "brand_id"])
     # v3.9: 宿主先行——VM.virtualhost_id 按 name 解析，Hypervisor 行须先入库
     ok &= push("zbx-hypervisors", by_cls["Hypervisor"],
-               ["name", "org_id", "status", "description"])
+               ["name", "org_id", "status", "description", "server_id"])
     # v2: 模板证据优先分类；v2.1: DB 实例挂承载主机、VM 挂占位宿主、全量装载启用 obsolete 判定
     ok &= push("zbx-vms", by_cls["VirtualMachine"],
                ["name", "org_id", "status", "managementip", "description", "virtualhost_id"])
