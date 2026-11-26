@@ -40,6 +40,7 @@ ITOP_URL = os.environ.get("ITOP_URL", "http://itop-web:80").rstrip("/")
 ITOP_USER = os.environ.get("ITOP_USER", "admin")
 ITOP_PWD = os.environ.get("ITOP_ADMIN_PWD", "")
 ITOP_DB_HOST = os.environ.get("ITOP_DB_HOST", "itop-db")
+ITOP_DB_PORT = os.environ.get("ITOP_DB_PORT", "3306")
 ITOP_DB_NAME = os.environ.get("ITOP_DB_NAME", "itop")
 ITOP_DB_USER = os.environ.get("ITOP_DB_USER", "itop")
 ITOP_DB_PASS = os.environ.get("ITOP_DB_PASS", "").strip()
@@ -768,7 +769,8 @@ def mysql_exec(sql: str) -> str:
     """执行 SQL 批（密码走 MYSQL_PWD 环境变量，不进 argv）"""
     env = dict(os.environ, MYSQL_PWD=ITOP_DB_PASS)
     p = subprocess.run(
-        ["mysql", "-h", ITOP_DB_HOST, "-u", ITOP_DB_USER, "--default-character-set=utf8mb4", ITOP_DB_NAME],
+        ["mysql", "-h", ITOP_DB_HOST, "-P", ITOP_DB_PORT, "-u", ITOP_DB_USER,
+         "--default-character-set=utf8mb4", ITOP_DB_NAME],
         input=sql.encode(), capture_output=True, timeout=TIMEOUT, env=env)
     if p.returncode != 0:
         raise RuntimeError("mysql failed: " + p.stderr.decode(errors="replace")[:300])
@@ -872,7 +874,7 @@ def itop_db_sql(sql: str) -> bool:
     try:
         env = dict(os.environ, MYSQL_PWD=ITOP_DB_PASS)
         r = subprocess.run(
-            ["mysql", "-h", ITOP_DB_HOST, "-u", ITOP_DB_USER,
+            ["mysql", "-h", ITOP_DB_HOST, "-P", ITOP_DB_PORT, "-u", ITOP_DB_USER,
              "--default-character-set=utf8mb4",
              ITOP_DB_NAME, "-N", "-e", sql],
             capture_output=True, text=True, timeout=60, env=env)
@@ -900,12 +902,10 @@ def reconcile_staging_location():
     """
     try:
         r = subprocess.run(
-            ["mysql", "-h", os.environ.get("ITOP_DB_HOST", "itop-db"),
-             "-u", os.environ.get("ITOP_DB_USER", "itop"),
-             f"-p{os.environ.get('ITOP_DB_PASS', '')}",
-             "--default-character-set=utf8mb4",
-             os.environ.get("ITOP_DB_NAME", "itop"), "-N", "-e", sql],
-            capture_output=True, text=True, timeout=60)
+            ["mysql", "-h", ITOP_DB_HOST, "-P", ITOP_DB_PORT, "-u", ITOP_DB_USER,
+             "--default-character-set=utf8mb4", ITOP_DB_NAME, "-N", "-e", sql],
+            capture_output=True, text=True, timeout=60,
+            env=dict(os.environ, MYSQL_PWD=ITOP_DB_PASS))
         loc_id = (r.stdout or "").strip()
     except Exception as e:  # noqa: BLE001
         log(f"staging-reconcile: locate id ERROR: {e}")

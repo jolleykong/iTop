@@ -1,11 +1,25 @@
-# iTop CMDB 基础设施栈（2026-11-20）
+# iTop CMDB 基础设施栈（2026-11-20，2026-11-26 改为外置 MariaDB）
 # 版本基准：jolleykong/iTop tag:3.3.0-1（用户定稿为默认版本）
-# 端口：8081（宿主，避开 itops-frontend 8080）；DB 仅 docker 内网，不暴露宿主端口
+# 端口：8081（宿主，避开 itops-frontend 8080）
+#
+# 数据库：默认连外置 MariaDB（aiops-mariadb，与 aiops 共用一个实例、各自独立库）。
+#   iTop 与 aiops 共用实例的前提是「各自独立的 database + 独立的 user」，
+#   两边数据互不可见，只是少维护一个数据库进程。
+#   历史内置栈保留在 `bundled-db` profile 下，仅作回滚用：
+#       docker compose --profile bundled-db up -d db
+#   iTop 侧连接信息记在 conf/production/config-itop.php（itop-conf 卷持久化），
+#   sync 侧走环境变量 ITOP_DB_*（见 .env）。
+#
+# 镜像 tag 说明：itop-web 本轮无代码变更，沿用 kkv-3.1.0；
+#   itop-sync 增加了 ITOP_DB_PORT 支持与口令入参清理，升到 kkv-3.1.1。
 services:
+  # ── 回滚用：内置 MariaDB（默认不启动） ─────────────────────────
+  # 启用后需把 config-itop.php 的 db_host 改回 itop-db
   db:
     image: mariadb:10.11
     container_name: itop-db
     restart: unless-stopped
+    profiles: ["bundled-db"]
     environment:
       # 口令统一来自 docker/.env（不入库）；缺失时 compose 直接报错，避免默认弱口令
       MARIADB_ROOT_PASSWORD: "${ITOP_DB_ROOT_PASSWORD:?请在 docker/.env 配置 ITOP_DB_ROOT_PASSWORD}"
@@ -29,9 +43,6 @@ services:
     image: itop-web:kkv-3.1.0
     container_name: itop-web
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     ports:
       - "8081:80"
     volumes:
@@ -47,9 +58,6 @@ services:
     image: itop-web:kkv-3.1.0
     container_name: itop-provision
     restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - itop-conf:/var/www/html/conf
       - itop-data:/var/www/html/data
@@ -70,12 +78,9 @@ services:
   sync:
     build:
       context: ./cmdb-sync
-    image: itop-sync:kkv-3.1.0
+    image: itop-sync:kkv-3.1.1
     container_name: itop-sync
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
       ZBX_URL: "${ZBX_URL}"
       ZBX_TOKEN: "${ZBX_TOKEN}"
@@ -85,9 +90,11 @@ services:
       CMDB_ORG: "${CMDB_ORG:-ITOPS}"
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-14400}"
       SYNC_HTTP_TIMEOUT: "${SYNC_HTTP_TIMEOUT:-600}"
-      ITOP_DB_HOST: itop-db
-      ITOP_DB_NAME: itop
-      ITOP_DB_USER: itop
+      # 外置 MariaDB（默认）；回滚到内置栈时把 .env 的 ITOP_DB_HOST 设为 itop-db
+      ITOP_DB_HOST: "${ITOP_DB_HOST:-aiops-mariadb}"
+      ITOP_DB_PORT: "${ITOP_DB_PORT:-3306}"
+      ITOP_DB_NAME: "${ITOP_DB_NAME:-itop}"
+      ITOP_DB_USER: "${ITOP_DB_USER:-itop}"
       ITOP_DB_PASS: "${ITOP_DB_PASS:?请在 docker/.env 配置 ITOP_DB_PASS}"
     volumes:
       # 宿主 SN 映射表可热更新（改了不用重建镜像）；镜像内已内置一份默认副本
