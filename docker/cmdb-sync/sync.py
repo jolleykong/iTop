@@ -298,7 +298,7 @@ def build_oracle_map(hosts: list) -> dict:
 def build_all(hosts: list, oracle_map: dict = None) -> tuple:
     """分类 + BMC 关联合并。返回 {cls: [rows]} 及统计。"""
     stats = {"merged_bmc": [], "unlinked_bmc": [], "merged_osagent": [],
-             "counts": {}}
+             "merged_hv_snmp": [], "counts": {}}
     by_cls = {"Server": [], "VirtualMachine": [], "DBServer": [],
               "NetworkDevice": [], "StorageSystem": [], "Hypervisor": []}
     # v3.8: phys:unverified 且与 VMware Guest 同 IP 的 Server 行，按 IP 归组
@@ -504,6 +504,46 @@ def build_all(hosts: list, oracle_map: dict = None) -> tuple:
         tgt["description"] = clean("zbx: " + "; ".join(n for n in tgt["_notes"] if n))
     if drop_ids:
         by_cls["Server"] = [r for r in by_cls["Server"] if id(r) not in drop_ids]
+
+    # v3.14: ESXi 宿主去重 —— 同一物理宿主在 Zabbix 可能有两条 host：
+    # VMware Hypervisor LLD host（tech=UUID，display={#HV.NAME}=IP）与
+    # ESXi SNMP 独立 host（tech=VMWareServerNNN / 裸 IP，SNMP 硬件告警）。
+    # 二者 managementip 相同时 SNMP 行并入 UUID 行：CI 名=UUID 行 display（IP），
+    # VM.virtualhost_id 按 name 解析零漂移；SNMP 侧 inventory 证据回填
+    # （空值不覆盖），SNMP 证据以 snmp:{tech} 记入 description。
+    # 注意 SNMP host 不可见名不得与 LLD {#HV.NAME} 撞车（撞车会导致 LLD
+    # 建不出 UUID host，guest hv_uuid 首选钥匙解析失败——2026-11-26 实测）。
+    hv_rows = by_cls["Hypervisor"]
+    hv_by_ip = {}
+    for r in hv_rows:
+        ip = r.get("managementip") or ""
+        if ip:
+            hv_by_ip.setdefault(ip, []).append(r)
+    drop_hv = set()
+    hv_uuid_re = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+    for ip, rs in hv_by_ip.items():
+        if len(rs) < 2:
+            continue
+        uuid_rows = [r for r in rs if hv_uuid_re.match(r.get("_tech") or "")]
+        keep = uuid_rows[0] if uuid_rows else rs[0]
+        for r in rs:
+            if r is keep:
+                continue
+            keep["_notes"].append("snmp:" + (r.get("_tech") or r["name"]))
+            if not keep.get("serialnumber") and r.get("serialnumber"):
+                keep["serialnumber"] = r["serialnumber"]
+            if not keep.get("model_id") and r.get("model_id"):
+                keep["model_id"] = r["model_id"]
+            if not keep.get("brand_id") and r.get("brand_id"):
+                keep["brand_id"] = r["brand_id"]
+            drop_hv.add(id(r))
+            stats["merged_hv_snmp"].append(
+                f"{r['name']} -> {keep['name']}")
+    if drop_hv:
+        by_cls["Hypervisor"] = [r for r in hv_rows if id(r) not in drop_hv]
+        for r in by_cls["Hypervisor"]:
+            r["description"] = clean("zbx: " + "; ".join(n for n in r["_notes"] if n))
 
     by_cls["VirtualMachine"].sort(key=lambda r: r["name"])
     by_cls["Hypervisor"].sort(key=lambda r: r["name"])
@@ -789,6 +829,9 @@ def run_once() -> bool:
     n_real = stats["counts"].get("vm_on_real_host", 0)
     log(f"VM 宿主挂接: {n_real}/{n_vm} 台挂真实 Hypervisor"
         f", 其余 {n_vm - n_real} 台待 Zabbix Guest host tag 下发后自动迁移")
+    if stats["merged_hv_snmp"]:
+        log(f"ESXi SNMP 宿主并入 UUID 宿主 {len(stats['merged_hv_snmp'])} 台: "
+            + ", ".join(stats["merged_hv_snmp"]))
 
     if ITOP_PWD in PLACEHOLDERS:
         log("SKIPPED push: ITOP_ADMIN_PWD not set — fill /opt/itop/.env and 'docker compose restart sync'")
