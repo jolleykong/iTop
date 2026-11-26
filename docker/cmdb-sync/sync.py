@@ -342,7 +342,24 @@ def build_oracle_map(hosts: list) -> dict:
     return m
 
 
-def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None) -> tuple:
+def load_ext_hv_sn(path: str = None) -> dict:
+    """v3.17: 外源宿主 SN 表（vc_sn_pull.py 直读 vCenter otherIdentifyingInfo 产出）。
+
+    文件格式: {宿主管理IP: SN}；键命中 Hypervisor 行 managementip。
+    SN 优先级: vcenter-item > vc-api(外源表) > uuid-decode。
+    文件缺失/坏格式时静默返回空表（不阻塞同步）。"""
+    p = path or os.environ.get("VC_SN_MAP", "/app/vc_sn_map.json")
+    try:
+        with open(p) as f:
+            raw = json.load(f)
+        return {str(k).strip(): str(v).strip() for k, v in raw.items() if str(v).strip()}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None, ext_hv_sn: dict = None) -> tuple:
     """分类 + BMC 关联合并。返回 {cls: [rows]} 及统计。"""
     stats = {"merged_bmc": [], "unlinked_bmc": [], "merged_osagent": [],
              "merged_hv_snmp": [], "counts": {}}
@@ -599,10 +616,12 @@ def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None) -> tuple
         for r in by_cls["Hypervisor"]:
             r["description"] = clean("zbx: " + "; ".join(n for n in r["_notes"] if n))
 
-    # v3.15: 宿主挂物理机 —— Hypervisor.server_id 按 SN 解析到 Server 行
-    # （svr-MGMT-{IP}-{OS名} 带外口 CI，inventory.serialno_a）。SN 来源：
-    # a) vmware.hv.hw.serialnumber item（vCenter SDK 精确，实测仅 Dell 机型返回）
-    # b) UUID 全 ASCII 解码（华为/浪潮机型，见 decode_uuid_sn）
+    # v3.15/v3.17: 宿主挂物理机 —— Hypervisor.server_id 按 SN 解析到 Server 行
+    # （svr-MGMT-{IP}-{OS名} 带外口 CI，inventory.serialno_a）。SN 来源优先级：
+    # a) vmware.hv.hw.serialnumber item（vCenter SDK，实测仅部分 Dell 机型返回）
+    # b) 外源表 vc_sn_map.json（vc_sn_pull.py 直读 vCenter otherIdentifyingInfo，
+    #    键=宿主管理 IP；v3.17，实测覆盖 28/36）
+    # c) UUID 全 ASCII 解码（HPE 机型，见 decode_uuid_sn）
     # SN 证据同时记入 description（Hypervisor 类无 serialnumber 字段）。
     server_sn = {}
     for r in by_cls["Server"]:
@@ -614,6 +633,9 @@ def build_all(hosts: list, oracle_map: dict = None, hv_sn: dict = None) -> tuple
         tech = r.get("_tech") or ""
         sn = ((hv_sn or {}).get(tech) or "").strip()
         note = "sn:vcenter-item" if sn else ""
+        if not sn:
+            sn = ((ext_hv_sn or {}).get(r.get("managementip") or "") or "").strip()
+            note = "sn:vc-api" if sn else ""
         if not sn:
             sn = decode_uuid_sn(tech)
             note = "sn:uuid-decode" if sn else ""
@@ -917,7 +939,10 @@ def run_once() -> bool:
             hv_sn[tech] = v
     log(f"hypervisor SN via vCenter item: {len(hv_sn)} 台")
 
-    by_cls, stats = build_all(hosts, oracle_map, hv_sn)
+    ext_hv_sn = load_ext_hv_sn()
+    log(f"hypervisor SN via vc_sn_map.json: {len(ext_hv_sn)} 台")
+
+    by_cls, stats = build_all(hosts, oracle_map, hv_sn, ext_hv_sn)
     if stats.get("skipped_template_guest"):
         log("vCenter 模板 VM 跳过(不入 CMDB) " +
             str(stats["counts"].get("VM_template_skipped", 0)) + " 台: "
