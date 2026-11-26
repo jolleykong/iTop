@@ -89,6 +89,9 @@ services:
       ITOP_DB_NAME: itop
       ITOP_DB_USER: itop
       ITOP_DB_PASS: "${ITOP_DB_PASS:?请在 docker/.env 配置 ITOP_DB_PASS}"
+    volumes:
+      # 宿主 SN 映射表可热更新（改了不用重建镜像）；镜像内已内置一份默认副本
+      - ./cmdb-sync/vc_sn_map.json:/app/vc_sn_map.json:ro
 
 volumes:
   itop-db-data:
